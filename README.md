@@ -26,15 +26,7 @@ Just talk to your AI assistant naturally:
 
 **1. Get your Asana token** from [Asana Developer Console](https://developers.asana.com/docs/personal-access-token)
 
-**2. Clone and build:**
-
-```bash
-git clone https://github.com/BLZvi/asana-mcp-server.git
-cd asana-mcp-server
-npm install
-```
-
-**3. Add the server to your MCP client:**
+**2. Add the server to your MCP client:**
 
 ### Claude Desktop
 
@@ -44,8 +36,8 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "asana": {
-      "command": "node",
-      "args": ["/absolute/path/to/asana-mcp-server/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "@blzvi/asana-mcp-server"],
       "env": {
         "ASANA_ACCESS_TOKEN": "your-asana-access-token"
       }
@@ -57,12 +49,26 @@ Add to your `claude_desktop_config.json`:
 ### Claude Code
 
 ```bash
-claude mcp add asana -e ASANA_ACCESS_TOKEN=<TOKEN> -- node /absolute/path/to/asana-mcp-server/build/index.js
+claude mcp add asana -e ASANA_ACCESS_TOKEN=<TOKEN> -- npx -y @blzvi/asana-mcp-server
 ```
 
 ### Any MCP-compatible client
 
-This server works with any client that supports the [Model Context Protocol](https://modelcontextprotocol.io) — point it at the built `build/index.js` with the `ASANA_ACCESS_TOKEN` env var.
+This server works with any client that supports the [Model Context Protocol](https://modelcontextprotocol.io):
+
+```bash
+ASANA_ACCESS_TOKEN=your-token npx -y @blzvi/asana-mcp-server
+```
+
+### Install from source (alternative)
+
+```bash
+git clone https://github.com/BLZvi/asana-mcp-server.git
+cd asana-mcp-server
+npm install
+```
+
+Then use `node build/index.js` instead of `npx -y @blzvi/asana-mcp-server` in the examples above.
 
 ## 80 Tools Across 16 Categories
 
@@ -164,8 +170,6 @@ What's coming next:
 - **Story CRUD** — Edit and delete comments (currently read + create)
 - **Duplicate project** — Create projects from templates
 - **Test coverage** — Unit and integration tests with vitest
-
-See [roadmap.md](roadmap.md) for the full plan.
 
 ## Full Tool Reference
 
