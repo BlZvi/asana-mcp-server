@@ -4,7 +4,7 @@
     "access": "public"
   },
   "version": "1.0.0",
-  "description": "MCP server that gives AI assistants full access to the Asana API — 80 tools, 18 prompt templates, and browsable resources",
+  "description": "MCP server that gives AI assistants full access to the Asana API — 86 tools, 35 prompt templates, and browsable resources",
   "main": "build/index.js",
   "type": "module",
   "bin": {
