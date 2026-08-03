@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same PR cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege by default; jobs opt in to more where needed.
+permissions:
+  contents: read
+
+env:
+  # Reproducible, quiet installs. `npm ci` already ignores the lockfile-less
+  # case, but funding/audit noise obscures real failures in the log.
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_AUDIT: "false"
+
+jobs:
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 — Maintenance LTS until 2027-04, and the floor declared in
+        #      package.json engines. Kept so we don't silently break users
+        #      still on it; drop when engines is raised.
+        # 24 — Active LTS until 2028-04. What most CI and production runs use.
+        # 26 — Current. Catches breakage before it reaches an LTS line.
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` fails if package.json and the lockfile disagree, which is the
+      # behaviour we want — a drifted lockfile should not silently install.
+      - name: Install
+        run: npm ci
+
+      - name: Lint and format check
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test — server starts and serves its catalog
+        run: npm run smoke
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+          if-no-files-found: error
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Only the published dependency tree matters — dev-only advisories (the
+      # Inspector, esbuild's dev server) are never shipped to users.
+      #
+      # `|| true` because the remaining advisories come from the MCP SDK's
+      # optional HTTP-transport dependencies (hono, path-to-regexp). This
+      # server is stdio-only and never constructs those code paths, so they are
+      # unreachable. The report is still surfaced for review; make this a hard
+      # failure once upstream clears them.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high || true
+
+      - name: Audit all dependencies (informational)
+        run: npm audit || true
+
+      # This server holds an Asana bearer token, and the Asana SDK attaches the
+      # Authorization header to every error it throws. Any raw error log is a
+      # credential leak — this is a hard gate, not advisory.
+      - name: Check for unsafe error logging
+        run: npm run check:logging
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:javascript-typescript
+
+  package:
+    name: Package contents
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # Catches accidentally shipping tests, scratch files, or secrets.
+      - name: Inspect publish payload
+        run: |
+          npm pack --dry-run 2>&1 | tee pack.txt
+          if grep -qiE '\.(test|spec)\.|scratch-|\.env|\.pi-subagents' pack.txt; then
+            echo "::error::Package would ship test, scratch, or secret files"
+            exit 1
+          fi
+          echo "Publish payload is clean."
+
+      # The binary must be runnable straight from a packed tarball — this is
+      # what `npx @blzvi/asana-mcp-server` actually does.
+      - name: Verify packed tarball executes
+        run: |
+          npm pack --silent
+          TARBALL=$(ls ./*.tgz)
+          mkdir -p /tmp/install-test && cd /tmp/install-test
+          npm init -y >/dev/null 2>&1
+          npm install "$GITHUB_WORKSPACE/$TARBALL" --silent
+          if ! ASANA_ACCESS_TOKEN=fake timeout 20s \
+              node node_modules/@blzvi/asana-mcp-server/build/index.js < /dev/null 2>&1 \
+              | grep -q "Asana MCP Server running on stdio"; then
+            echo "::error::Packed server failed to start"
+            exit 1
+          fi
+          echo "Packed tarball starts correctly."

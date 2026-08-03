@@ -222,9 +222,13 @@ export async function searchTasksWindowed(
             : null;
 
         if (halves) {
-          // Results are discarded on purpose — the two halves re-fetch this
-          // window in full, and keeping the truncated parent would make
-          // `saturatedBuckets` the only signal of a cap we already worked around.
+          // Keep the truncated parent results even though the halves will
+          // re-fetch this window. They are a strict subset of what the children
+          // return, so merging costs nothing (dedupe is by gid) — but if the
+          // request budget runs out before the children are queried, this is
+          // the difference between returning a lower bound and returning
+          // nothing at all.
+          mergeAll(tasks);
           return halves.map((half) => ({ ...half, depth: bucket.depth + 1 }));
         }
 

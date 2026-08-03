@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AsanaClientWrapper } from "./asana-client-wrapper.js";
+import { logError } from "./lib/logging.js";
 
 async function readWorkspaceResource(
   client: AsanaClientWrapper,
@@ -59,10 +60,7 @@ async function readProjectResource(
       opt_fields: "name,gid,created_at",
     }));
   } catch (sectionError) {
-    console.error(
-      `Error fetching sections for project ${projectGid}:`,
-      sectionError,
-    );
+    logError(`Error fetching sections for project ${projectGid}`, sectionError);
   }
 
   let customFields: any[] = [];
@@ -106,8 +104,8 @@ async function readProjectResource(
         });
     }
   } catch (customFieldError) {
-    console.error(
-      `Error fetching custom fields for project ${projectGid}:`,
+    logError(
+      `Error fetching custom fields for project ${projectGid}`,
       customFieldError,
     );
   }
@@ -180,10 +178,7 @@ async function readTaskResource(
         opt_fields: "name,gid,completed,assignee,assignee.name,due_on",
       }));
     } catch (subtaskError) {
-      console.error(
-        `Error fetching subtasks for task ${taskGid}:`,
-        subtaskError,
-      );
+      logError(`Error fetching subtasks for task ${taskGid}`, subtaskError);
     }
   }
 
@@ -194,7 +189,7 @@ async function readTaskResource(
     });
     comments = stories.filter((s: any) => s.type === "comment").slice(0, 10);
   } catch (storyError) {
-    console.error(`Error fetching stories for task ${taskGid}:`, storyError);
+    logError(`Error fetching stories for task ${taskGid}`, storyError);
   }
 
   return {
@@ -297,7 +292,7 @@ export async function registerResources(
       );
     }
   } catch (error) {
-    console.error("Error registering workspace resources at startup:", error);
+    logError("Error registering workspace resources at startup", error);
   }
 
   // Register project template

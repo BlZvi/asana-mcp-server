@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AsanaClientWrapper } from "./asana-client-wrapper.js";
 import { isDryRunMode, isReadOnlyMode } from "./config.js";
+import { errorSummary, logError } from "./lib/logging.js";
 import { activityTools } from "./tools/activity-tools.js";
 import { attachmentTools } from "./tools/attachment-tools.js";
 import { codeTools } from "./tools/code-tools.js";
@@ -117,15 +118,18 @@ export function registerTools(
         try {
           return await entry.handler(client, args);
         } catch (error) {
-          console.error("Error executing tool:", error);
-          const message =
-            error instanceof Error ? error.message : String(error);
+          // Never log the raw error: the Asana SDK embeds the bearer token in
+          // every failure it throws.
+          logError(`Error executing tool ${entry.name}`, error);
           return {
             isError: true,
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ error: message, tool: entry.name }),
+                text: JSON.stringify({
+                  ...errorSummary(error),
+                  tool: entry.name,
+                }),
               },
             ],
           };

@@ -7,6 +7,7 @@ import {
   type CompletableResourceType,
   makeResourceCompleter,
 } from "./lib/complete.js";
+import { errorSummary, logError } from "./lib/logging.js";
 import { analyzeTaskPrompt } from "./prompts/analyze-task.js";
 import { asanaHelpPrompt } from "./prompts/asana-help.js";
 import { capturePrompt } from "./prompts/capture.js";
@@ -173,9 +174,9 @@ export function registerPrompts(
             args as Record<string, string | undefined>,
           );
         } catch (error) {
-          console.error("Error building prompt:", entry.name, error);
-          const message =
-            error instanceof Error ? error.message : String(error);
+          // Raw errors carry the bearer token — always summarise.
+          logError(`Error building prompt ${entry.name}`, error);
+          const { message, hint } = errorSummary(error);
           // A thrown error surfaces as a protocol failure with no context, so
           // return an explanatory message the model can act on instead.
           return {
@@ -186,7 +187,7 @@ export function registerPrompts(
                   type: "text" as const,
                   text: `The \`/${entry.name}\` command could not gather its data.
 
-**Error:** ${message}
+**Error:** ${message}${hint ? `\n\n**Likely cause:** ${hint}` : ""}
 
 Tell the user what went wrong and suggest a fix — commonly a missing or wrong identifier, or a workspace that needs to be specified. Do not retry automatically.`,
                 },

@@ -12,3 +12,14 @@ dist/
 
 # Agent tooling scratch
 .pi-subagents/
+
+# Ad-hoc verification scripts — never commit
+scratch-*
+*.scratch.*
+
+# Coverage output
+coverage/
+
+# CI local-simulation artifacts
+pack.txt
+tmp-install/

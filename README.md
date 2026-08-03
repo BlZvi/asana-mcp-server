@@ -476,9 +476,17 @@ What's coming next:
 
 </details>
 
+## Security
+
+This server holds an Asana personal access token with your full permissions. It writes nothing to disk, talks only to `app.asana.com`, and never logs credentials.
+
+That last point takes active effort: the Asana SDK attaches the `Authorization: Bearer <token>` header to every error it throws, so a naive `console.error(err)` would leak your token into terminal scrollback and client logs. All error output is routed through a redacting summariser, and CI fails if any code path passes a raw error to `console.*`.
+
+See [SECURITY.md](SECURITY.md) for the full threat model and reporting process.
+
 ## Requirements
 
-- **Node.js 22+**
+- **Node.js 22 or newer.** CI tests against 22 (Maintenance LTS), 24 (Active LTS), and 26 (Current). Node 24 is recommended — 22 leaves maintenance in April 2027.
 - An [Asana personal access token](https://developers.asana.com/docs/personal-access-token)
 
 ## Contributing
@@ -487,14 +495,12 @@ What's coming next:
 git clone https://github.com/BLZvi/asana-mcp-server.git
 cd asana-mcp-server
 npm install
-npm run dev
+npm run verify   # lint, typecheck, tests, logging guard, build, smoke test
 ```
 
-Test with the MCP Inspector:
+Then `npm run dev` to run from source, or `npm run inspector` for interactive testing.
 
-```bash
-npm run inspector
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) — it documents four rules that are enforced in CI (never log raw errors, never hide incomplete coverage, never parse story text, always preview before writing).
 
 ## License
 

@@ -1,0 +1,34 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine dev-tooling bumps instead of five.
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+      production-patches:
+        dependency-type: production
+        update-types: [patch]
+    ignore:
+      # The MCP SDK gates protocol behaviour and its minor bumps have changed
+      # startup timing enough to break the smoke test (1.27 -> 1.30 did).
+      # Patches auto-group above; minors and majors get reviewed by hand.
+      - dependency-name: "@modelcontextprotocol/sdk"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      # Action majors move fast — checkout and setup-node both reached v7
+      # while this repo was pinned to v4. Weekly keeps the gap small.
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

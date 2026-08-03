@@ -1,6 +1,7 @@
 import Asana from "asana";
 import { cacheDisabled, maxConcurrency } from "./config.js";
 import { cacheKey, TTL, TTLCache } from "./lib/cache.js";
+import { logError } from "./lib/logging.js";
 import { mapWithConcurrency, RateLimiter } from "./lib/rate-limiter.js";
 import {
   searchTasksWindowed as runWindowedSearch,
@@ -491,8 +492,8 @@ export class AsanaClientWrapper {
           }),
       );
     } catch (error) {
-      console.error(
-        `Error fetching custom field settings for project ${projectId}:`,
+      logError(
+        `Error fetching custom field settings for project ${projectId}`,
         error,
       );
       return [];

@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AsanaClientWrapper } from "./asana-client-wrapper.js";
+import { logError } from "./lib/logging.js";
 import { registerPrompts } from "./prompt-handler.js";
 import { registerResources } from "./resource-handler.js";
 import { registerTools } from "./tool-handler.js";
@@ -45,6 +46,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal error in main():", error);
+  // Redacted: a startup failure from the Asana SDK carries the bearer token.
+  logError("Fatal error in main()", error);
   process.exit(1);
 });
