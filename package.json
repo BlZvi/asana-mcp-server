@@ -70,7 +70,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@xmldom/xmldom": "^0.8.11",
-    "asana": "^3.0.12",
+    "asana": "^3.1.12",
     "zod": "^4.3.6"
   }
 }
