@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const overdueTriagePrompt: PromptEntry = {
   name: "overdue-triage",
@@ -14,7 +15,7 @@ export const overdueTriagePrompt: PromptEntry = {
     const projectId = args?.project_id;
     if (!projectId) throw new Error("Project ID is required");
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
 
     const [project, { data: tasks }] = await Promise.all([
       client.getProject(projectId, {
@@ -32,11 +33,8 @@ export const overdueTriagePrompt: PromptEntry = {
         (t: { completed?: boolean; due_on?: string | null }) =>
           !t.completed && t.due_on && t.due_on < today,
       )
-      .sort(
-        (
-          a: { due_on?: string | null },
-          b: { due_on?: string | null },
-        ) => (a.due_on ?? "").localeCompare(b.due_on ?? ""),
+      .sort((a: { due_on?: string | null }, b: { due_on?: string | null }) =>
+        (a.due_on ?? "").localeCompare(b.due_on ?? ""),
       );
 
     if (overdueTasks.length === 0) {
@@ -74,14 +72,16 @@ export const overdueTriagePrompt: PromptEntry = {
         }) => {
           const lines = [
             `  - **${t.name}**`,
-            `    Assignee: ${t.assignee?.name ?? "Unassigned"} | ${severity(t.due_on!)} (was due ${t.due_on})`,
+            `    Assignee: ${t.assignee?.name ?? "Unassigned"} | ${severity(t.due_on ?? today)} (was due ${t.due_on})`,
           ];
           if (t.num_subtasks && t.num_subtasks > 0) {
             lines.push(`    Subtasks: ${t.num_subtasks}`);
           }
           if (t.notes) {
             const preview = t.notes.slice(0, 100).replace(/\n/g, " ");
-            lines.push(`    Notes: ${preview}${t.notes.length > 100 ? "..." : ""}`);
+            lines.push(
+              `    Notes: ${preview}${t.notes.length > 100 ? "..." : ""}`,
+            );
           }
           return lines.join("\n");
         },

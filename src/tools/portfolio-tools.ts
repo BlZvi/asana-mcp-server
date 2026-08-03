@@ -58,7 +58,9 @@ export const portfolioTools: ToolEntry[] = [
         .optional(),
     },
     handler: async (client, { workspace, ...opts }) =>
-      jsonResponse(await client.getPortfolios(resolveWorkspace(workspace), opts)),
+      jsonResponse(
+        await client.getPortfolios(resolveWorkspace(workspace), opts),
+      ),
   },
   {
     readOnly: false,

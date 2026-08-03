@@ -403,7 +403,7 @@ Fix the problem</body>`,
         if (
           taskData.html_notes &&
           error instanceof Error &&
-          error.message.includes("400")
+          [400, 500].includes((error as any).status)
         ) {
           return xmlValidButErrorResponse(error);
         }
@@ -462,7 +462,7 @@ Fix the problem</body>`,
         if (
           taskData.html_notes &&
           error instanceof Error &&
-          error.message.includes("400")
+          [400, 500].includes((error as any).status)
         ) {
           return xmlValidButErrorResponse(error);
         }

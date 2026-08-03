@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const statusUpdatePrompt: PromptEntry = {
   name: "status-update",
@@ -47,8 +48,10 @@ export const statusUpdatePrompt: PromptEntry = {
     const progress =
       total > 0 ? `${Math.round((completed / total) * 100)}%` : "N/A";
 
-    const today = new Date().toISOString().slice(0, 10);
-    const incompleteTasks = tasks.filter((t: { completed?: boolean }) => !t.completed);
+    const today = todayISO();
+    const incompleteTasks = tasks.filter(
+      (t: { completed?: boolean }) => !t.completed,
+    );
     const overdueTasks = incompleteTasks.filter(
       (t: { due_on?: string | null }) => t.due_on && t.due_on < today,
     );
@@ -65,9 +68,9 @@ export const statusUpdatePrompt: PromptEntry = {
       ? (statusColors[latestStatus.color] ?? latestStatus.color)
       : progress === "N/A"
         ? "Unknown"
-        : Number.parseInt(progress) >= 75
+        : Number.parseInt(progress, 10) >= 75
           ? "On Track"
-          : Number.parseInt(progress) >= 40
+          : Number.parseInt(progress, 10) >= 40
             ? "In Progress"
             : "Early Stage";
 
@@ -87,8 +90,7 @@ export const statusUpdatePrompt: PromptEntry = {
     const audienceInstructions: Record<string, string> = {
       executive:
         "Write for senior leadership. Lead with the headline (status + key number). Use 3\u20135 bullet points max. Skip task-level detail. Focus on business impact, risks, and decisions needed. Avoid jargon.",
-      team:
-        "Write for the project team. Be direct and specific. Include what's done, what's in flight, and what's blocked. A short paragraph followed by bullets works well.",
+      team: "Write for the project team. Be direct and specific. Include what's done, what's in flight, and what's blocked. A short paragraph followed by bullets works well.",
       client:
         "Write for an external client. Use a professional, positive tone. Lead with progress and milestones. Mention risks only with mitigation context. Avoid internal process details.",
     };

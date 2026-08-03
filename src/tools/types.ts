@@ -13,4 +13,13 @@ export type ToolEntry = {
   readOnly: boolean;
   inputSchema: ZodRawShape;
   handler: ToolHandler;
+  /** Human-friendly label shown in client UIs. Defaults to a title-cased name. */
+  title?: string;
+  /**
+   * Irreversibly removes data. Surfaced to clients as `destructiveHint` so they
+   * can require confirmation for these specifically rather than for all writes.
+   */
+  destructive?: boolean;
+  /** Repeating the call with identical arguments has no additional effect. */
+  idempotent?: boolean;
 };

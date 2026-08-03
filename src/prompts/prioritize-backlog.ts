@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const prioritizeBacklogPrompt: PromptEntry = {
   name: "prioritize-backlog",
@@ -21,7 +22,7 @@ export const prioritizeBacklogPrompt: PromptEntry = {
     if (!projectId) throw new Error("Project ID is required");
 
     const focus = args?.focus;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
 
     const [project, { data: sections }, { data: tasks }] = await Promise.all([
       client.getProject(projectId, {
@@ -40,9 +41,8 @@ export const prioritizeBacklogPrompt: PromptEntry = {
     const incompleteTasks = tasks.filter(
       (t: { completed?: boolean }) => !t.completed,
     );
-    const today2 = today;
     const overdue = incompleteTasks.filter(
-      (t: { due_on?: string | null }) => t.due_on && t.due_on < today2,
+      (t: { due_on?: string | null }) => t.due_on && t.due_on < today,
     );
     const noDueDate = incompleteTasks.filter(
       (t: { due_on?: string | null }) => !t.due_on,
@@ -52,16 +52,22 @@ export const prioritizeBacklogPrompt: PromptEntry = {
     );
 
     // Group by section
-    const sectionMap = new Map<string, { name: string; tasks: typeof incompleteTasks }>();
+    const sectionMap = new Map<
+      string,
+      { name: string; tasks: typeof incompleteTasks }
+    >();
     for (const section of sections) {
       sectionMap.set(section.gid, { name: section.name, tasks: [] });
     }
-    sectionMap.set("none", { name: "No Section", tasks: [] });
+    const noSection = {
+      name: "No Section",
+      tasks: [] as typeof incompleteTasks,
+    };
+    sectionMap.set("none", noSection);
 
     for (const task of incompleteTasks) {
-      const sectionGid =
-        task.memberships?.[0]?.section?.gid ?? "none";
-      const entry = sectionMap.get(sectionGid) ?? sectionMap.get("none")!;
+      const sectionGid = task.memberships?.[0]?.section?.gid ?? "none";
+      const entry = sectionMap.get(sectionGid) ?? noSection;
       entry.tasks.push(task);
     }
 
@@ -79,12 +85,15 @@ export const prioritizeBacklogPrompt: PromptEntry = {
               const due = t.due_on
                 ? ` · due ${t.due_on}${t.due_on < today ? " ⚠" : ""}`
                 : " · no due date";
-              const who = t.assignee?.name ? ` · ${t.assignee.name}` : " · unassigned";
+              const who = t.assignee?.name
+                ? ` · ${t.assignee.name}`
+                : " · unassigned";
               return `    - ${t.name}${due}${who}`;
             },
           )
           .join("\n");
-        const more = st.length > 10 ? `\n    ... and ${st.length - 10} more` : "";
+        const more =
+          st.length > 10 ? `\n    ... and ${st.length - 10} more` : "";
         return `  **${name}** (${st.length} tasks)\n${taskLines}${more}`;
       })
       .join("\n\n");

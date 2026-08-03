@@ -64,8 +64,12 @@ export const attachmentTools: ToolEntry[] = [
           "The GID of the attachment to delete (numeric string, e.g. `'1234567890123'`).",
         ),
     },
-    handler: async (client, { attachment_gid }) =>
-      successResponse(`Attachment ${attachment_gid} deleted successfully`),
+    handler: async (client, { attachment_gid }) => {
+      await client.deleteAttachment(attachment_gid);
+      return successResponse(
+        `Attachment ${attachment_gid} deleted successfully`,
+      );
+    },
   },
   {
     readOnly: false,
@@ -80,7 +84,9 @@ export const attachmentTools: ToolEntry[] = [
         ),
       url: z
         .string()
-        .describe("The URL to attach. Must be a valid URL (e.g. `https://...`)."),
+        .describe(
+          "The URL to attach. Must be a valid URL (e.g. `https://...`).",
+        ),
       name: z
         .string()
         .optional()

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const projectRisksPrompt: PromptEntry = {
   name: "project-risks",
@@ -14,15 +15,14 @@ export const projectRisksPrompt: PromptEntry = {
     const projectId = args?.project_id;
     if (!projectId) throw new Error("Project ID is required");
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
 
     const [project, taskCounts, { data: tasks }] = await Promise.all([
       client.getProject(projectId, {
-        opt_fields:
-          "name,due_date,start_on,owner,owner.name,archived",
+        opt_fields: "name,due_date,start_on,owner,owner.name,archived",
       }),
       client.getProjectTaskCounts(projectId, {
         opt_fields:
@@ -73,7 +73,11 @@ export const projectRisksPrompt: PromptEntry = {
       : null;
 
     const formatShortList = (
-      items: { name: string; due_on?: string | null; assignee?: { name?: string } | null }[],
+      items: {
+        name: string;
+        due_on?: string | null;
+        assignee?: { name?: string } | null;
+      }[],
       max = 5,
     ) => {
       const shown = items.slice(0, max).map((t) => {
@@ -81,7 +85,8 @@ export const projectRisksPrompt: PromptEntry = {
         const who = t.assignee?.name ? ` — ${t.assignee.name}` : "";
         return `    - ${t.name}${due}${who}`;
       });
-      if (items.length > max) shown.push(`    ... and ${items.length - max} more`);
+      if (items.length > max)
+        shown.push(`    ... and ${items.length - max} more`);
       return shown.join("\n");
     };
 

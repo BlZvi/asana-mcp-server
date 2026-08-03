@@ -9,7 +9,9 @@ export const sprintFromConfluencePrompt: PromptEntry = {
   argsSchema: {
     confluence_url: z
       .string()
-      .describe("URL of the Confluence page containing the work items or requirements"),
+      .describe(
+        "URL of the Confluence page containing the work items or requirements",
+      ),
     project_name: z
       .string()
       .describe("Name of the Asana project to create tasks in"),
@@ -22,9 +24,7 @@ export const sprintFromConfluencePrompt: PromptEntry = {
     workspace_gid: z
       .string()
       .optional()
-      .describe(
-        "Workspace GID (defaults to ASANA_DEFAULT_WORKSPACE_GID)",
-      ),
+      .describe("Workspace GID (defaults to ASANA_DEFAULT_WORKSPACE_GID)"),
     task_type: z
       .string()
       .optional()
@@ -62,8 +62,12 @@ export const sprintFromConfluencePrompt: PromptEntry = {
 
 ## Input
 - **Confluence URL:** ${confluenceUrl}
-- **Target project:** ${projectName}${sprintSection ? `
-- **Target section:** ${sprintSection}` : ""}
+- **Target project:** ${projectName}${
+              sprintSection
+                ? `
+- **Target section:** ${sprintSection}`
+                : ""
+            }
 - **Extraction type:** ${taskType}
 
 ## Step 1: Fetch the Confluence page
@@ -87,15 +91,23 @@ Present the extracted list to the user and confirm before creating anything. Ask
 - Any assignee or due date adjustments?
 
 ## Step 3: Find the project
-Use asana_search_projects to find the project named "${projectName}" and get its GID.${sprintSection ? `
-Then use asana_get_project_sections to find the section named "${sprintSection}" and get its GID.` : ""}
+Use asana_search_projects to find the project named "${projectName}" and get its GID.${
+              sprintSection
+                ? `
+Then use asana_get_project_sections to find the section named "${sprintSection}" and get its GID.`
+                : ""
+            }
 
 ## Step 4: Create the tasks
 For each confirmed work item, use asana_create_task with:
 - Task name: clear, action-oriented title
 - Notes: description from the Confluence page, plus source reference ("From Confluence: ${confluenceUrl}")
-- Project: the project GID${sprintSection ? `
-- Memberships: place in the "${sprintSection}" section` : ""}
+- Project: the project GID${
+              sprintSection
+                ? `
+- Memberships: place in the "${sprintSection}" section`
+                : ""
+            }
 - Assignee and due date if determined in Step 2
 
 Create tasks one at a time and report progress.

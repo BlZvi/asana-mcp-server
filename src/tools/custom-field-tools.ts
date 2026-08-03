@@ -184,10 +184,12 @@ export const customFieldTools: ToolEntry[] = [
           "The GID of the custom field to delete (numeric string, e.g. `'1234567890123'`).",
         ),
     },
-    handler: async (client, { custom_field_gid }) =>
-      successResponse(
+    handler: async (client, { custom_field_gid }) => {
+      await client.deleteCustomField(custom_field_gid);
+      return successResponse(
         `Custom field ${custom_field_gid} deleted successfully`,
-      ),
+      );
+    },
   },
   {
     readOnly: false,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const projectSummaryPrompt: PromptEntry = {
   name: "project-summary",
@@ -16,24 +17,25 @@ export const projectSummaryPrompt: PromptEntry = {
       throw new Error("Project ID is required");
     }
 
-    const [project, taskCounts, { data: statuses }, { data: tasks }] = await Promise.all([
-      client.getProject(projectId, {
-        opt_fields:
-          "name,notes,owner,owner.name,color,archived,due_date,start_on,team,team.name,current_status,current_status.text,current_status.color,current_status.title,current_status.author,current_status.author.name",
-      }),
-      client.getProjectTaskCounts(projectId, {
-        opt_fields:
-          "num_tasks,num_completed_tasks,num_incomplete_tasks,num_milestones,num_incomplete_milestones",
-      }),
-      client.getProjectStatusesForProject(projectId, {
-        opt_fields: "text,color,title,author,author.name,created_at",
-        limit: 5,
-      }),
-      client.getTasksForProject(projectId, {
-        opt_fields: "name,completed,assignee,assignee.name,due_on",
-        limit: 50,
-      }),
-    ]);
+    const [project, taskCounts, { data: statuses }, { data: tasks }] =
+      await Promise.all([
+        client.getProject(projectId, {
+          opt_fields:
+            "name,notes,owner,owner.name,color,archived,due_date,start_on,team,team.name,current_status,current_status.text,current_status.color,current_status.title,current_status.author,current_status.author.name",
+        }),
+        client.getProjectTaskCounts(projectId, {
+          opt_fields:
+            "num_tasks,num_completed_tasks,num_incomplete_tasks,num_milestones,num_incomplete_milestones",
+        }),
+        client.getProjectStatusesForProject(projectId, {
+          opt_fields: "text,color,title,author,author.name,created_at",
+          limit: 5,
+        }),
+        client.getTasksForProject(projectId, {
+          opt_fields: "name,completed,assignee,assignee.name,due_on",
+          limit: 50,
+        }),
+      ]);
 
     const total = taskCounts.num_tasks ?? 0;
     const completed = taskCounts.num_completed_tasks ?? 0;
@@ -75,7 +77,7 @@ export const projectSummaryPrompt: PromptEntry = {
             .join("\n\n")
         : "  No status updates yet";
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const incompleteTasks = tasks.filter((t) => !t.completed);
     const overdueTasks = incompleteTasks.filter(
       (t) => t.due_on && t.due_on < today,

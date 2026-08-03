@@ -15,7 +15,7 @@ export const analyzeTaskPrompt: PromptEntry = {
     if (!taskId) throw new Error("Task ID is required");
 
     const gid = taskId.includes("/")
-      ? taskId.split("/").filter(Boolean).pop() ?? taskId
+      ? (taskId.split("/").filter(Boolean).pop() ?? taskId)
       : taskId;
 
     const [task, { data: subtasks }, { data: stories }] = await Promise.all([
@@ -37,14 +37,19 @@ export const analyzeTaskPrompt: PromptEntry = {
 
     const notesLength = task.notes?.trim().length ?? 0;
     const notesPreview = task.notes
-      ? task.notes.slice(0, 600) + (task.notes.length > 600 ? "\n[...truncated]" : "")
+      ? task.notes.slice(0, 600) +
+        (task.notes.length > 600 ? "\n[...truncated]" : "")
       : "No description";
 
     const subtaskSection =
       subtasks.length > 0
         ? subtasks
             .map(
-              (s: { name: string; completed?: boolean; assignee?: { name?: string } | null }) =>
+              (s: {
+                name: string;
+                completed?: boolean;
+                assignee?: { name?: string } | null;
+              }) =>
                 `  - [${s.completed ? "x" : " "}] ${s.name}${s.assignee?.name ? ` (${s.assignee.name})` : ""}`,
             )
             .join("\n")
@@ -55,7 +60,11 @@ export const analyzeTaskPrompt: PromptEntry = {
         ? comments
             .slice(0, 5)
             .map(
-              (s: { created_by?: { name?: string } | null; created_at: string; text?: string }) =>
+              (s: {
+                created_by?: { name?: string } | null;
+                created_at: string;
+                text?: string;
+              }) =>
                 `  [${new Date(s.created_at).toLocaleDateString()}] ${s.created_by?.name ?? "Unknown"}: ${(s.text ?? "").slice(0, 150)}${(s.text?.length ?? 0) > 150 ? "..." : ""}`,
             )
             .join("\n")
@@ -63,8 +72,13 @@ export const analyzeTaskPrompt: PromptEntry = {
 
     const customFieldSection =
       task.custom_fields
-        ?.filter((f: { display_value?: string | null }) => f.display_value != null)
-        .map((f: { name?: string; display_value?: string | null }) => `  ${f.name}: ${f.display_value}`)
+        ?.filter(
+          (f: { display_value?: string | null }) => f.display_value != null,
+        )
+        .map(
+          (f: { name?: string; display_value?: string | null }) =>
+            `  ${f.name}: ${f.display_value}`,
+        )
         .join("\n") || "  None";
 
     return {

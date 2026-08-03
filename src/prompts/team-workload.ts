@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const teamWorkloadPrompt: PromptEntry = {
   name: "team-workload",
@@ -8,9 +9,7 @@ export const teamWorkloadPrompt: PromptEntry = {
     "Analyze task distribution across team members in an Asana project to identify workload imbalances, overloaded members, and unassigned work.",
   readOnly: true,
   argsSchema: {
-    project_id: z
-      .string()
-      .describe("The GID of the project to analyze"),
+    project_id: z.string().describe("The GID of the project to analyze"),
   },
   handler: async (client: AsanaClientWrapper, args) => {
     const projectId = args?.project_id;
@@ -26,22 +25,27 @@ export const teamWorkloadPrompt: PromptEntry = {
       }),
     ]);
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const incompleteTasks = tasks.filter(
       (t: { completed?: boolean }) => !t.completed,
     );
 
-    type MemberEntry = { name: string; tasks: typeof incompleteTasks; overdue: number };
+    type MemberEntry = {
+      name: string;
+      tasks: typeof incompleteTasks;
+      overdue: number;
+    };
     const byAssignee = new Map<string, MemberEntry>();
     byAssignee.set("unassigned", { name: "Unassigned", tasks: [], overdue: 0 });
 
     for (const task of incompleteTasks) {
       const key: string = task.assignee?.gid ?? "unassigned";
       const name: string = task.assignee?.name ?? "Unassigned";
-      if (!byAssignee.has(key)) {
-        byAssignee.set(key, { name, tasks: [], overdue: 0 });
+      let entry = byAssignee.get(key);
+      if (!entry) {
+        entry = { name, tasks: [], overdue: 0 };
+        byAssignee.set(key, entry);
       }
-      const entry = byAssignee.get(key)!;
       entry.tasks.push(task);
       if (task.due_on && task.due_on < today) entry.overdue++;
     }
@@ -53,7 +57,11 @@ export const teamWorkloadPrompt: PromptEntry = {
     const membersWithTasks = sorted.filter(
       ([k, { tasks: mt }]) => k !== "unassigned" && mt.length > 0,
     );
-    const unassignedEntry = byAssignee.get("unassigned")!;
+    const unassignedEntry = byAssignee.get("unassigned") ?? {
+      name: "Unassigned",
+      tasks: [],
+      overdue: 0,
+    };
 
     const workloadSection = sorted
       .filter(([, { tasks: mt }]) => mt.length > 0)

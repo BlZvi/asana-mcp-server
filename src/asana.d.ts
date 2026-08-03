@@ -281,7 +281,10 @@ declare module "asana" {
       sectionGid: string,
       opts?: Opts,
     ): Promise<PagedResponse<TaskBase>>;
-    getTasksForTag(tagGid: string, opts?: Opts): Promise<PagedResponse<TaskBase>>;
+    getTasksForTag(
+      tagGid: string,
+      opts?: Opts,
+    ): Promise<PagedResponse<TaskBase>>;
     getSubtasksForTask(
       taskGid: string,
       opts?: Opts,
@@ -400,7 +403,10 @@ declare module "asana" {
       workspaceGid: string,
       opts?: Opts,
     ): Promise<PagedResponse<TagBase>>;
-    getTagsForTask(tagGid: string, opts?: Opts): Promise<PagedResponse<TagBase>>;
+    getTagsForTask(
+      tagGid: string,
+      opts?: Opts,
+    ): Promise<PagedResponse<TagBase>>;
     createTagForWorkspace(
       body: any,
       workspaceGid: string,
@@ -597,12 +603,14 @@ declare module "asana" {
       opts?: Opts,
     ): Promise<{ data: AttachmentBase }>;
     deleteAttachment(attachment_gid: string): Promise<{ data: object }>;
-    createAttachmentForObject(opts?: Opts & {
-      parent?: string;
-      resource_subtype?: string;
-      url?: string;
-      name?: string;
-    }): Promise<{ data: AttachmentBase }>;
+    createAttachmentForObject(
+      opts?: Opts & {
+        parent?: string;
+        resource_subtype?: string;
+        url?: string;
+        name?: string;
+      },
+    ): Promise<{ data: AttachmentBase }>;
   }
 
   export class CustomFieldsApi {
@@ -614,7 +622,10 @@ declare module "asana" {
       custom_field_gid: string,
       opts?: Opts,
     ): Promise<{ data: CustomFieldBase }>;
-    createCustomField(body: any, opts?: Opts): Promise<{ data: CustomFieldBase }>;
+    createCustomField(
+      body: any,
+      opts?: Opts,
+    ): Promise<{ data: CustomFieldBase }>;
     updateCustomField(
       custom_field_gid: string,
       opts?: Opts & { body?: any },

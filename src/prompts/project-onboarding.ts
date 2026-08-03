@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const projectOnboardingPrompt: PromptEntry = {
   name: "project-onboarding",
@@ -21,31 +22,36 @@ export const projectOnboardingPrompt: PromptEntry = {
     if (!projectId) throw new Error("Project ID is required");
 
     const personRole = args?.person_role;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
 
-    const [project, taskCounts, { data: sections }, { data: tasks }, { data: statuses }] =
-      await Promise.all([
-        client.getProject(projectId, {
-          opt_fields:
-            "name,notes,owner,owner.name,team,team.name,due_date,start_on,current_status,current_status.text,current_status.color,current_status.title",
-        }),
-        client.getProjectTaskCounts(projectId, {
-          opt_fields:
-            "num_tasks,num_completed_tasks,num_incomplete_tasks,num_milestones,num_incomplete_milestones",
-        }),
-        client.getProjectSections(projectId, {
-          opt_fields: "name",
-        }),
-        client.getTasksForProject(projectId, {
-          opt_fields:
-            "name,completed,assignee,assignee.name,due_on,notes,memberships,memberships.section,memberships.section.name",
-          limit: 50,
-        }),
-        client.getProjectStatusesForProject(projectId, {
-          opt_fields: "text,color,title,author,author.name,created_at",
-          limit: 3,
-        }),
-      ]);
+    const [
+      project,
+      taskCounts,
+      { data: sections },
+      { data: tasks },
+      { data: statuses },
+    ] = await Promise.all([
+      client.getProject(projectId, {
+        opt_fields:
+          "name,notes,owner,owner.name,team,team.name,due_date,start_on,current_status,current_status.text,current_status.color,current_status.title",
+      }),
+      client.getProjectTaskCounts(projectId, {
+        opt_fields:
+          "num_tasks,num_completed_tasks,num_incomplete_tasks,num_milestones,num_incomplete_milestones",
+      }),
+      client.getProjectSections(projectId, {
+        opt_fields: "name",
+      }),
+      client.getTasksForProject(projectId, {
+        opt_fields:
+          "name,completed,assignee,assignee.name,due_on,notes,memberships,memberships.section,memberships.section.name",
+        limit: 50,
+      }),
+      client.getProjectStatusesForProject(projectId, {
+        opt_fields: "text,color,title,author,author.name,created_at",
+        limit: 3,
+      }),
+    ]);
 
     const total = taskCounts.num_tasks ?? 0;
     const completed = taskCounts.num_completed_tasks ?? 0;
@@ -66,10 +72,10 @@ export const projectOnboardingPrompt: PromptEntry = {
     }
 
     for (const task of incompleteTasks.slice(0, 30)) {
-      const sectionName =
-        task.memberships?.[0]?.section?.name ?? "No Section";
-      if (!sectionTaskMap.has(sectionName)) sectionTaskMap.set(sectionName, []);
-      sectionTaskMap.get(sectionName)!.push(task.name);
+      const sectionName = task.memberships?.[0]?.section?.name ?? "No Section";
+      const names = sectionTaskMap.get(sectionName) ?? [];
+      names.push(task.name);
+      sectionTaskMap.set(sectionName, names);
     }
 
     const structureSection = [...sectionTaskMap.entries()]

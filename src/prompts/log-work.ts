@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const logWorkPrompt: PromptEntry = {
   name: "log-work",
@@ -37,7 +38,7 @@ export const logWorkPrompt: PromptEntry = {
     if (!projectName) throw new Error("Project name is required");
     if (!description) throw new Error("Description is required");
 
-    const date = args?.date ?? new Date().toISOString().slice(0, 10);
+    const date = args?.date ?? todayISO();
     const duration = args?.duration_minutes;
     const requester = args?.requester;
 

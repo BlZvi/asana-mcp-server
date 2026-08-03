@@ -1,8 +1,8 @@
 # MCP Server for Asana
 
-Give your AI assistant full access to Asana. Create tasks, manage projects, track time, search across your workspace — all through natural language.
+Give your AI assistant full access to Asana. Create tasks, manage projects, analyze delivery flow, estimate work from history — all through natural language.
 
-**80 tools** | **18 prompt templates** | **Browsable resources** | Full read + write coverage
+**86 tools** | **35 slash commands** | **Autocomplete** | **Browsable resources** | Full read + write coverage
 
 ## What can you do with this?
 
@@ -12,15 +12,26 @@ Just talk to your AI assistant naturally:
 
 > "Create a task for Sarah to review the API docs, due Friday, in the Backend project"
 
-> "Move all overdue tasks in the Marketing project to the Backlog section"
+> "Why is this task late?" → full lifecycle: where it stalled, who touched it, every reschedule
 
-> "Log 2 hours on PROJ-1234 for today"
+> "What did Alice work on in the last 3 months?"
 
-> "What's the status of our Q1 goals?"
+> "How much should we commit to next sprint?" → measured from real velocity, not guesswork
 
-> "Give me a standup summary for today"
+> "Where does work get stuck in this project?" → cycle time, bottlenecks, throughput
 
-> "Break down this task into subtasks"
+> "Turn these meeting notes into tasks"
+
+Run **`/asana-help`** to see every command grouped by what you're trying to do.
+
+## Highlights
+
+| | |
+|---|---|
+| **Type names, not GIDs** | Every command accepts a task/project *name* or *URL*. Live autocomplete suggests your real projects and people as you type. Ambiguous names return a disambiguation list rather than a wrong guess. |
+| **Honest analytics** | Asana's search API caps at 100 results with no pagination. This server uses adaptive time-window bisection to get complete data — and every report states exactly what it sampled, so partial results are never mistaken for complete ones. |
+| **History, not just snapshots** | Task activity streams are parsed into structured lifecycles: time-in-section, reschedule patterns, ownership churn, cycle vs. lead time. |
+| **Safe by default** | Read-only mode, dry-run mode, destructive-operation hints, and preview-before-write on every bulk operation. |
 
 ## Quick Start
 
@@ -70,12 +81,16 @@ npm install
 
 Then use `node build/index.js` instead of `npx -y @blzvi/asana-mcp-server` in the examples above.
 
-## 80 Tools Across 16 Categories
+## 86 Tools Across 20 Categories
 
 Full CRUD coverage of the Asana API — your AI can read **and** write.
 
 | Category | Tools | What you can do |
 |---|:---:|---|
+| **History & Flow** | 2 | Task lifecycle reconstruction, project cycle-time/bottleneck analysis |
+| **Activity** | 1 | Per-person work history over any date range, with coverage reporting |
+| **Estimation** | 2 | Find comparable completed tasks, compute velocity with outlier detection |
+| **Code Bridge** | 1 | Resolve branch names / commit messages to Asana tasks |
 | **Tasks** | 12 | Search, create, update, delete, list by project/section/tag, batch get (up to 25), subtasks, multi-project |
 | **Task Relationships** | 3 | Dependencies, dependents, reparenting |
 | **Projects** | 7 | Search by name, CRUD, get sections & task counts |
@@ -93,47 +108,83 @@ Full CRUD coverage of the Asana API — your AI can read **and** write.
 | **Typeahead** | 1 | Fuzzy search any resource type by name |
 | **Workspaces** | 1 | List all accessible workspaces |
 
-## 18 Prompt Templates
+## 35 Slash Commands
 
-Pre-built workflows that combine API calls with AI reasoning. The AI pre-fetches relevant Asana data, then produces structured analysis or takes action.
+Pre-built workflows that combine API calls with AI reasoning. The server pre-fetches the relevant Asana data server-side, then hands the model one fully-hydrated message — so most commands need zero follow-up tool calls.
+
+**Not sure which to use? Run `/asana-help`.** ✎ = writes to Asana (always previews first).
 
 ### Task-level
 
-| Prompt | Description |
+| Command | Description |
 |---|---|
-| `task-summary` | Pre-fetches task details + comments, generates a status summary |
-| `analyze-task` | Scores how well-defined a task is (0-100) with per-dimension breakdown |
-| `task-completeness` | Fetches a task, identifies gaps, asks clarifying questions, updates the description |
-| `task-breakdown` | Breaks a complex task into well-scoped subtasks |
-| `log-work` | Retro-log work done outside Asana — creates a task and marks it complete |
+| `task-summary` | Status summary with details, custom fields, and all comments |
+| `task-history` | **New.** Full lifecycle from the activity stream: time in each section, every reschedule, ownership churn, risk signals |
+| `analyze-task` | Scores how well-defined a task is (0–100) with per-dimension breakdown |
+| `estimate` | **New.** Estimate by anchoring on comparable completed tasks — shows their original points *and* actual cycle time |
+| `task-completeness` ✎ | Identifies gaps, asks clarifying questions, updates the description |
+| `task-breakdown` ✎ | Breaks a complex task into well-scoped subtasks |
+| `log-work` ✎ | Retro-log work done outside Asana |
 
 ### Project-level
 
-| Prompt | Description |
+| Command | Description |
 |---|---|
-| `project-summary` | Full project status report with task counts, statuses, and open tasks |
-| `status-update` | Polished stakeholder status update (email/Slack-ready) |
-| `project-risks` | Scans for risk signals (overdue, unassigned, empty descriptions) and produces a risk register |
-| `project-onboarding` | "Getting up to speed" brief for someone new to a project |
-| `overdue-triage` | Triages overdue tasks: do now, reschedule, reassign, or drop |
-| `prioritize-backlog` | Guides prioritization of incomplete tasks by section |
-| `team-workload` | Analyzes task distribution across team members to spot imbalances |
+| `project-summary` | Full status report with task counts, statuses, and open tasks |
+| `flow-report` | **New.** Cycle/lead time percentiles, section bottlenecks, throughput, worst offenders |
+| `status-update` | Polished stakeholder update (email/Slack-ready) |
+| `project-risks` | Risk register built from real risk signals |
+| `stale-tasks` | **New.** Find forgotten work and decide: revive, reassign, reschedule, or close |
+| `overdue-triage` | Triage overdue tasks: do now, reschedule, reassign, or drop |
+| `prioritize-backlog` | Rank the backlog into P1–P4 |
+| `team-workload` | Task distribution across members, to spot imbalances |
+| `project-onboarding` | "Getting up to speed" brief for someone new |
 
 ### Personal productivity
 
-| Prompt | Description |
+| Command | Description |
 |---|---|
-| `my-tasks` | Fetches your incomplete tasks and generates a prioritized daily plan |
-| `standup` | Done/doing/blockers summary from your recent task activity |
-| `weekly-review` | Weekly reflection + plan from completed and open tasks |
+| `my-tasks` | Prioritized daily plan from your open tasks |
+| `standup` | Done / doing / blockers summary |
+| `unblock-me` | **New.** What's blocking you, plus drafted nudges to clear it |
+| `weekly-review` | Weekly reflection and next-week plan |
+| `capture` ✎ | **New.** Turn a freeform braindump into well-formed tasks |
 
-### Planning & creation
+### Cross-project
 
-| Prompt | Description |
+| Command | Description |
 |---|---|
-| `sprint-planning` | Plans a sprint from a project's backlog based on team capacity |
-| `sprint-from-confluence` | Fetches a Confluence page and creates corresponding Asana tasks |
-| `create-task` | Guided task creation with clarifying questions |
+| `contributions` | **New.** What a person worked on over a period, with trend comparison and methodology caveats |
+| `portfolio-health` | **New.** Roll-up across every project in a portfolio — the executive view |
+| `goal-progress` | **New.** Goal tracking with pace analysis (progress vs. time elapsed) |
+
+### Planning
+
+| Command | Description |
+|---|---|
+| `sprint-capacity` | **New.** How much to commit, from measured velocity — always a range |
+| `sprint-planning` | Build a sprint from the backlog |
+| `sprint-from-confluence` ✎ | Create tasks from a Confluence page |
+| `create-task` ✎ | Guided task creation |
+
+### Code ↔ Asana
+
+These need your client to have git/filesystem tools (Claude Code, Cursor, etc). They degrade gracefully when it doesn't — asking you to paste the command output instead.
+
+| Command | Description |
+|---|---|
+| `link-tasks-to-code` | **New.** Which tasks have code behind them, which commits have no task |
+| `tech-debt-roadmap` ✎ | **New.** TODO/FIXME markers + churn hotspots → clustered, deduplicated backlog |
+| `estimate-from-code` | **New.** Estimate grounded in the actual change surface |
+| `release-notes` | **New.** Changelog from completed tasks + commits |
+| `roadmap-gap-analysis` | **New.** Does the code back up what the roadmap claims is done? |
+| `impact-analysis` | **New.** Blast radius and the right owner for a proposed change |
+
+### Discovery
+
+| Command | Description |
+|---|---|
+| `asana-help` | **New.** Every command grouped by intent, with examples and your current config |
 
 ## Browsable Resources
 
@@ -147,31 +198,75 @@ Expose Asana data as MCP resources that clients can browse directly:
 
 ## Configuration
 
-| Variable | Required | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `ASANA_ACCESS_TOKEN` | Yes | Your [Asana personal access token](https://developers.asana.com/docs/personal-access-token) |
-| `ASANA_DEFAULT_WORKSPACE_GID` | No | Default workspace GID — tools use this when no workspace is specified |
-| `ASANA_READ_ONLY_MODE` | No | Set to `true` to disable all write operations (great for safe exploration) |
+| `ASANA_ACCESS_TOKEN` | **required** | Your [Asana personal access token](https://developers.asana.com/docs/personal-access-token) |
+| `ASANA_DEFAULT_WORKSPACE_GID` | — | Default workspace — avoids passing one to every command |
+| `ASANA_READ_ONLY_MODE` | `false` | `true` disables and hides all write operations |
+| `ASANA_DRY_RUN` | `false` | `true` keeps write tools visible but reports what they *would* do without calling Asana |
+| `ASANA_TIMEZONE` | `UTC` | IANA timezone for all "today"/overdue reasoning (e.g. `America/New_York`) |
+| `ASANA_MAX_CONCURRENCY` | `4` | Simultaneous Asana API calls (1–10) |
+| `ASANA_MAX_REQUESTS_PER_PROMPT` | `80` | Request budget per analytics command (10–500) |
+| `ASANA_CACHE_DISABLED` | `false` | `true` bypasses all response caching |
+| `ASANA_POINTS_FIELD_GID` | — | Explicit story-points custom field GID |
+| `ASANA_POINTS_FIELD_NAME` | `^(story )?points?$\|^estimate$\|^size$` | Regex used to auto-discover the points field |
+| `ASANA_SPRINT_LENGTH_DAYS` | `14` | Default period length for velocity |
+| `ASANA_BUSINESS_DAYS` | `1,2,3,4,5` | Working days (0 = Sunday) |
 
-## Read-Only Mode
+Bad or missing config never throws — every value degrades to its default.
 
-Set `ASANA_READ_ONLY_MODE=true` to restrict the server to read-only operations. All create/update/delete tools and write prompts are automatically hidden. Useful for:
+> **Set `ASANA_TIMEZONE`.** The default of UTC means a user in UTC-8 at 5pm gets tomorrow's date, and tasks get flagged overdue a day early.
 
-- Safely exploring what the server can do before granting write access
-- Shared environments where you want to prevent accidental changes
-- Audit and reporting use cases
+## Safety Modes
+
+**Read-only** (`ASANA_READ_ONLY_MODE=true`) — hides all 43 write tools and 7 write commands. For safe exploration, shared environments, and audit/reporting use.
+
+**Dry run** (`ASANA_DRY_RUN=true`) — write tools stay *visible* so the model can plan a complete sequence, but each returns `"would have created task X"` instead of calling Asana. Use this to rehearse a bulk operation before committing to it.
+
+**Tool annotations** — every tool reports `readOnlyHint`, `destructiveHint`, and `idempotentHint`, so clients can auto-approve safe reads while prompting for confirmation on the 13 genuinely destructive operations.
+
+## How the analytics stay honest
+
+Asana's task search endpoint returns at most 100 results and **supports no pagination**. A naive "what did Alice do in 6 months" query returns an arbitrary 100 tasks and reports it as complete.
+
+This server solves that with **adaptive time-window bisection**: the range is split into buckets, and any bucket that saturates at 100 is recursively halved until it fits or hits a floor. Results are deduplicated by GID.
+
+Critically, every command using this reports its own coverage:
+
+> *Based on 340 tasks across 7 windows (28 requests). Complete.*
+
+or
+
+> *Based on 512 tasks across 12 windows (40 requests). **INCOMPLETE** — 2 windows hit the 100-result cap; counts are a lower bound.*
+
+The same principle applies throughout: `flow-report` states its sample size versus project size, `contributions` ships methodology caveats with the data, and `sprint-capacity` suppresses point velocity entirely when fewer than 50% of tasks have points set — because low-coverage point velocity looks authoritative while measuring an arbitrary subset.
 
 ## Roadmap
 
 What's coming next:
 
-- **Rate limiting / retry** — Automatic backoff for Asana's 429 rate limits
+- **Elicitation** — Structured confirmation dialogs for bulk writes (currently prose-based preview + confirm)
+- **Structured output** — `outputSchema` on read tools so clients render tables instead of JSON
 - **Remove dependencies/dependents** — Complete dependency management (currently add-only)
 - **Story CRUD** — Edit and delete comments (currently read + create)
 - **Duplicate project** — Create projects from templates
 - **Test coverage** — Unit and integration tests with vitest
 
 ## Full Tool Reference
+
+<details>
+<summary><strong>History, Flow & Analytics</strong> — 6 tools</summary>
+
+| Tool | Description |
+|---|---|
+| `asana_get_task_history` | Reconstruct a task's full lifecycle from its activity stream: event timeline, time per section, cycle/lead time, reschedule history with slip days, ownership churn, and triggered risk signals |
+| `asana_get_project_flow_metrics` | Cycle/lead time percentiles, section bottlenecks, weekly throughput, reschedule rates, and worst-offending tasks for a project |
+| `asana_get_user_activity` | What a person completed and created over a date range, aggregated by month and project, with full coverage reporting and methodology caveats |
+| `asana_find_comparable_tasks` | Find completed tasks similar to a target, returning their estimates **and** actual cycle times for reference-class forecasting |
+| `asana_get_velocity` | Velocity for a person or project using median + MAD, with bulk-close outlier detection and points-coverage reporting |
+| `asana_match_tasks_to_refs` | Resolve branch names, commit messages, and PR titles to Asana tasks |
+
+</details>
 
 <details>
 <summary><strong>Tasks</strong> — 12 tools</summary>

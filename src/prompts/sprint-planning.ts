@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const sprintPlanningPrompt: PromptEntry = {
   name: "sprint-planning",
@@ -8,7 +9,9 @@ export const sprintPlanningPrompt: PromptEntry = {
     "Plan a sprint from a project's backlog. Pre-fetches incomplete tasks, then guides selection, assignment, and sprint goal definition based on team capacity.",
   readOnly: true,
   argsSchema: {
-    project_id: z.string().describe("The GID of the project to plan a sprint for"),
+    project_id: z
+      .string()
+      .describe("The GID of the project to plan a sprint for"),
     sprint_duration_days: z
       .string()
       .optional()
@@ -38,20 +41,22 @@ export const sprintPlanningPrompt: PromptEntry = {
 
     const sprintDays = Number.parseInt(args?.sprint_duration_days ?? "14", 10);
     const team = args?.team
-      ? args.team.split(",").map((s) => s.trim()).filter(Boolean)
+      ? args.team
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [];
-    const capacityDays =
-      args?.capacity_days_per_person
-        ? Number.parseFloat(args.capacity_days_per_person)
-        : Math.round(sprintDays * 0.8);
+    const capacityDays = args?.capacity_days_per_person
+      ? Number.parseFloat(args.capacity_days_per_person)
+      : Math.round(sprintDays * 0.8);
     const focus = args?.focus;
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const sprintEnd = new Date(Date.now() + sprintDays * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
 
-    const [project, { data: sections }, { data: tasks }] = await Promise.all([
+    const [project, , { data: tasks }] = await Promise.all([
       client.getProject(projectId, {
         opt_fields: "name,team,team.name",
       }),
@@ -93,9 +98,7 @@ export const sprintPlanningPrompt: PromptEntry = {
     };
 
     const overdueSection =
-      overdue.length > 0
-        ? overdue.map(formatTask).join("\n")
-        : "  None";
+      overdue.length > 0 ? overdue.map(formatTask).join("\n") : "  None";
 
     const sprintSection =
       dueDuringSprint.length > 0
@@ -105,7 +108,9 @@ export const sprintPlanningPrompt: PromptEntry = {
     const backlogSection =
       noDueDate.length > 0
         ? noDueDate.slice(0, 20).map(formatTask).join("\n") +
-          (noDueDate.length > 20 ? `\n  ... and ${noDueDate.length - 20} more` : "")
+          (noDueDate.length > 20
+            ? `\n  ... and ${noDueDate.length - 20} more`
+            : "")
         : "  None";
 
     const teamSection =

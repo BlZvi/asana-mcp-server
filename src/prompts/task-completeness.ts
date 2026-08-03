@@ -5,7 +5,7 @@ export const taskCompletenessPrompt: PromptEntry = {
   name: "task-completeness",
   description:
     "Fetch an Asana task, assess whether its description is fully actionable, ask targeted questions to fill gaps, then update the task description.",
-  readOnly: true,
+  readOnly: false,
   argsSchema: {
     task_id: z.string().describe("The GID or URL of the task to analyze"),
   },

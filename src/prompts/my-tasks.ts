@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import { resolveWorkspace } from "../config.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const myTasksPrompt: PromptEntry = {
   name: "my-tasks",
@@ -18,7 +19,7 @@ export const myTasksPrompt: PromptEntry = {
   },
   handler: async (client: AsanaClientWrapper, args) => {
     const workspaceGid = resolveWorkspace(args?.workspace_gid);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
@@ -45,10 +46,16 @@ export const myTasksPrompt: PromptEntry = {
       (t: { due_on?: string }) => !t.due_on || t.due_on > nextWeek,
     );
 
-    const formatTask = (t: { name: string; due_on?: string; projects?: { name?: string }[] }) => {
+    const formatTask = (t: {
+      name: string;
+      due_on?: string;
+      projects?: { name?: string }[];
+    }) => {
       const project =
-        t.projects?.map((p) => p.name ?? "").filter(Boolean).join(", ") ||
-        "No project";
+        t.projects
+          ?.map((p) => p.name ?? "")
+          .filter(Boolean)
+          .join(", ") || "No project";
       return `  - ${t.name} [${project}]${t.due_on ? ` · due ${t.due_on}` : ""}`;
     };
 

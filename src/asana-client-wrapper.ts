@@ -1,4 +1,13 @@
 import Asana from "asana";
+import { cacheDisabled, maxConcurrency } from "./config.js";
+import { cacheKey, TTL, TTLCache } from "./lib/cache.js";
+import { mapWithConcurrency, RateLimiter } from "./lib/rate-limiter.js";
+import {
+  searchTasksWindowed as runWindowedSearch,
+  type WindowedOpts,
+  type WindowedResult,
+  type WindowField,
+} from "./lib/windowed-search.js";
 
 // Standard opts accepted by most Asana list/get endpoints
 type WrapperOpts = { opt_fields?: string; limit?: number; offset?: string };
@@ -7,6 +16,11 @@ type WrapperOpts = { opt_fields?: string; limit?: number; offset?: string };
 export type NextPage = { offset: string; path: string; uri: string } | null;
 /** Wrapper return type for all list methods — includes data array and pagination cursor */
 export type Paginated<T> = { data: T[]; next_page: NextPage };
+
+/** Page size used when this wrapper drives pagination itself. */
+const PAGE_LIMIT = 100;
+/** Default ceiling on pages fetched by {@link AsanaClientWrapper.getAllStoriesForTask}. */
+const DEFAULT_MAX_STORY_PAGES = 10;
 
 export class AsanaClientWrapper {
   private workspaces: Asana.WorkspacesApi;
@@ -26,6 +40,11 @@ export class AsanaClientWrapper {
   private attachments: Asana.AttachmentsApi;
   private customFields: Asana.CustomFieldsApi;
   private typeahead: Asana.TypeaheadApi;
+
+  /** Caps concurrency, paces dispatches and retries throttled/transient failures. */
+  private limiter = new RateLimiter({ maxConcurrent: maxConcurrency });
+  /** Short-lived response cache. Only a conservative subset of reads use it. */
+  private cache = new TTLCache();
 
   constructor(token: string) {
     const client = Asana.ApiClient.instance;
@@ -51,11 +70,57 @@ export class AsanaClientWrapper {
     this.typeahead = new Asana.TypeaheadApi();
   }
 
+  // ---------------------------------------------------------------------------
+  // Infrastructure helpers
+  //
+  // Every call that touches the network goes through `limited`. Writes included:
+  // they spend the same rate budget as reads, they are simply never cached.
+  //
+  // IMPORTANT: `limited` must never be nested — an outer call holds a semaphore
+  // slot while awaiting inner calls that need their own slot, which deadlocks
+  // once enough outer calls run concurrently. Methods that fan out (e.g.
+  // `getMultipleTasksByGid`) therefore delegate to already-limited methods
+  // instead of wrapping themselves.
+  // ---------------------------------------------------------------------------
+
+  /** Run an API call under the shared concurrency limit, pacing and retry policy. */
+  private async limited<T>(fn: () => Promise<T>): Promise<T> {
+    return this.limiter.run(fn);
+  }
+
+  /**
+   * Memoise `fn` under `key` for `ttlMs`.
+   *
+   * Bypassed entirely when `ASANA_CACHE_DISABLED=true`. Failures are never
+   * cached, and concurrent callers for the same key share one invocation.
+   *
+   * Note: cached values are returned by reference, so callers must treat them
+   * as read-only. Every current caller only serialises them into an MCP
+   * response, so this is safe today.
+   */
+  private async cached<T>(
+    key: string,
+    ttlMs: number,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (cacheDisabled) return fn();
+    return this.cache.getOrSet(key, ttlMs, fn);
+  }
+
+  /** Drop every cached response. Useful after a mutation or between prompts. */
+  clearCache(): void {
+    this.cache.clear();
+  }
+
   async listWorkspaces(
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.WorkspaceBase>> {
-    const response = await this.workspaces.getWorkspaces(opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.cached(cacheKey("listWorkspaces", [opts]), TTL.REFERENCE, () =>
+      this.limited(async () => {
+        const response = await this.workspaces.getWorkspaces(opts);
+        return { data: response.data, next_page: response.next_page ?? null };
+      }),
+    );
   }
 
   async searchProjects(
@@ -69,11 +134,10 @@ export class AsanaClientWrapper {
     let offset: string | undefined;
 
     do {
-      const params: Asana.Opts = { archived, limit: 100, ...opts };
+      const params: Asana.Opts = { archived, limit: PAGE_LIMIT, ...opts };
       if (offset) params.offset = offset;
-      const response = await this.projects.getProjectsForWorkspace(
-        workspace,
-        params,
+      const response = await this.limited(() =>
+        this.projects.getProjectsForWorkspace(workspace, params),
       );
       allProjects.push(...response.data);
       offset = response.next_page?.offset;
@@ -82,7 +146,10 @@ export class AsanaClientWrapper {
     return allProjects.filter((project) => pattern.test(project.name));
   }
 
-  async searchTasks(workspace: string, searchOpts: any = {}): Promise<Paginated<any>> {
+  async searchTasks(
+    workspace: string,
+    searchOpts: any = {},
+  ): Promise<Paginated<any>> {
     // Extract known parameters
     const {
       text,
@@ -186,9 +253,8 @@ export class AsanaClientWrapper {
       searchParams.sort_ascending = sort_ascending;
     if (opt_fields) searchParams.opt_fields = opt_fields;
 
-    const response = await this.tasks.searchTasksForWorkspace(
-      workspace,
-      searchParams,
+    const response = await this.limited(() =>
+      this.tasks.searchTasksForWorkspace(workspace, searchParams),
     );
 
     // Transform the response to simplify custom fields if present
@@ -218,12 +284,39 @@ export class AsanaClientWrapper {
     return { data: transformedData, next_page: response.next_page ?? null };
   }
 
+  /**
+   * Exhaustive task search over a date range.
+   *
+   * Asana's search endpoint caps at 100 results with no offset pagination, so
+   * {@link searchTasks} silently truncates on wide ranges. This slices the range
+   * into windows, bisects any window that saturates, and reports exactly what
+   * was and was not covered. Prefer this over {@link searchTasks} whenever the
+   * caller needs a complete set rather than a sample.
+   */
+  async searchTasksWindowed(
+    workspace: string,
+    baseOpts: any = {},
+    range: { field: WindowField; from: string; to: string },
+    opts: WindowedOpts = {},
+  ): Promise<WindowedResult> {
+    // Each inner searchTasks call is already rate-limited, so the windowed
+    // driver must not take a slot of its own (see `limited` note above).
+    return runWindowedSearch(
+      (o) => this.searchTasks(workspace, o),
+      baseOpts,
+      range,
+      opts,
+    );
+  }
+
   async getTask(
     taskId: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.TaskBase> {
-    const response = await this.tasks.getTask(taskId, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.getTask(taskId, opts);
+      return response.data;
+    });
   }
 
   async createTask(projectId: string, data: any): Promise<Asana.TaskBase> {
@@ -260,16 +353,79 @@ export class AsanaClientWrapper {
     }
 
     const taskData = { data: taskPayload };
-    const response = await this.tasks.createTask(taskData);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.createTask(taskData);
+      return response.data;
+    });
   }
 
   async getStoriesForTask(
     taskId: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.StoryBase>> {
-    const response = await this.stories.getStoriesForTask(taskId, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    // Story history is append-only: once written, a story never changes.
+    return this.cached(
+      cacheKey("getStoriesForTask", [taskId, opts]),
+      TTL.HISTORICAL,
+      () =>
+        this.limited(async () => {
+          const response = await this.stories.getStoriesForTask(taskId, opts);
+          return { data: response.data, next_page: response.next_page ?? null };
+        }),
+    );
+  }
+
+  /**
+   * Every story on a task, following `next_page.offset` to exhaustion.
+   *
+   * {@link getStoriesForTask} returns a single page, so any caller reasoning
+   * over a task's full history (status changes, comment counts) needs this
+   * instead. `truncated` is true when `maxPages` was reached while Asana still
+   * had more to give — the caller must not treat the result as complete.
+   */
+  async getAllStoriesForTask(
+    taskId: string,
+    opts: { opt_fields?: string; maxPages?: number } = {},
+  ): Promise<{ data: any[]; pagesFetched: number; truncated: boolean }> {
+    const maxPages = Math.max(
+      1,
+      Math.trunc(opts.maxPages ?? DEFAULT_MAX_STORY_PAGES),
+    );
+    const optFields = opts.opt_fields;
+
+    return this.cached(
+      cacheKey("getAllStoriesForTask", [taskId, { optFields, maxPages }]),
+      TTL.HISTORICAL,
+      async () => {
+        const data: any[] = [];
+        let offset: string | undefined;
+        let pagesFetched = 0;
+        let truncated = false;
+
+        while (pagesFetched < maxPages) {
+          const params: WrapperOpts = { limit: PAGE_LIMIT };
+          if (optFields) params.opt_fields = optFields;
+          if (offset) params.offset = offset;
+
+          // Each page is limited individually rather than wrapping the whole
+          // loop, so a long pagination run never holds a concurrency slot
+          // hostage between requests.
+          const response = await this.limited(() =>
+            this.stories.getStoriesForTask(taskId, params),
+          );
+
+          data.push(...response.data);
+          pagesFetched++;
+
+          offset = response.next_page?.offset;
+          if (!offset) break;
+
+          if (pagesFetched >= maxPages) truncated = true;
+        }
+
+        return { data, pagesFetched, truncated };
+      },
+    );
   }
 
   async updateTask(taskId: string, data: any): Promise<Asana.TaskBase> {
@@ -283,8 +439,10 @@ export class AsanaClientWrapper {
       },
     };
     const opts = {};
-    const response = await this.tasks.updateTask(body, taskId, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.updateTask(body, taskId, opts);
+      return response.data;
+    });
   }
 
   async getProject(
@@ -293,28 +451,45 @@ export class AsanaClientWrapper {
   ): Promise<Asana.ProjectBase> {
     // Only include opts if opt_fields was actually provided
     const options = opts.opt_fields ? opts : {};
-    const response = await this.projects.getProject(projectId, options);
-    return response.data;
+    return this.cached(
+      cacheKey("getProject", [projectId, options]),
+      TTL.CURRENT,
+      () =>
+        this.limited(async () => {
+          const response = await this.projects.getProject(projectId, options);
+          return response.data;
+        }),
+    );
   }
 
   async getProjectCustomFieldSettings(
     projectId: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.CustomFieldSettingBase[]> {
-    try {
-      const options: WrapperOpts = {
-        limit: 100,
-        opt_fields:
-          opts.opt_fields ||
-          "custom_field,custom_field.name,custom_field.gid,custom_field.resource_type,custom_field.type,custom_field.description,custom_field.enum_options,custom_field.enum_options.name,custom_field.enum_options.gid,custom_field.enum_options.enabled",
-      };
+    const options: WrapperOpts = {
+      limit: PAGE_LIMIT,
+      opt_fields:
+        opts.opt_fields ||
+        "custom_field,custom_field.name,custom_field.gid,custom_field.resource_type,custom_field.type,custom_field.description,custom_field.enum_options,custom_field.enum_options.name,custom_field.enum_options.gid,custom_field.enum_options.enabled",
+    };
 
-      const response =
-        await this.customFieldSettings.getCustomFieldSettingsForProject(
-          projectId,
-          options,
-        );
-      return response.data;
+    try {
+      // The cache sits inside the try so a transient failure degrades to `[]`
+      // for this call only — TTLCache never caches a rejection, so the empty
+      // fallback is not persisted for the next 10 minutes.
+      return await this.cached(
+        cacheKey("getProjectCustomFieldSettings", [projectId, options]),
+        TTL.REFERENCE,
+        () =>
+          this.limited(async () => {
+            const response =
+              await this.customFieldSettings.getCustomFieldSettingsForProject(
+                projectId,
+                options,
+              );
+            return response.data;
+          }),
+      );
     } catch (error) {
       console.error(
         `Error fetching custom field settings for project ${projectId}:`,
@@ -330,11 +505,13 @@ export class AsanaClientWrapper {
   ): Promise<Asana.TaskCountsBase> {
     // Only include opts if opt_fields was actually provided
     const options = opts.opt_fields ? opts : {};
-    const response = await this.projects.getTaskCountsForProject(
-      projectId,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projects.getTaskCountsForProject(
+        projectId,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async getProjectSections(
@@ -342,11 +519,21 @@ export class AsanaClientWrapper {
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.SectionBase>> {
     const options = opts.opt_fields ? opts : {};
-    const response = await this.sections.getSectionsForProject(
-      projectId,
-      options,
+    return this.cached(
+      cacheKey("getProjectSections", [projectId, options]),
+      TTL.CURRENT,
+      () =>
+        this.limited(async () => {
+          const response = await this.sections.getSectionsForProject(
+            projectId,
+            options,
+          );
+          return {
+            data: response.data,
+            next_page: response.next_page ?? null,
+          };
+        }),
     );
-    return { data: response.data, next_page: response.next_page ?? null };
   }
 
   async getSection(
@@ -354,8 +541,10 @@ export class AsanaClientWrapper {
     opts: WrapperOpts = {},
   ): Promise<Asana.SectionBase> {
     const options = opts.opt_fields ? opts : {};
-    const response = await this.sections.getSection(sectionGid, options);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.sections.getSection(sectionGid, options);
+      return response.data;
+    });
   }
 
   async createSection(
@@ -367,11 +556,13 @@ export class AsanaClientWrapper {
       body: { data },
     };
     if (opts.opt_fields) options.opt_fields = opts.opt_fields;
-    const response = await this.sections.createSectionForProject(
-      projectGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.sections.createSectionForProject(
+        projectGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async updateSection(
@@ -383,27 +574,35 @@ export class AsanaClientWrapper {
       body: { data },
     };
     if (opts.opt_fields) options.opt_fields = opts.opt_fields;
-    const response = await this.sections.updateSection(sectionGid, options);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.sections.updateSection(sectionGid, options);
+      return response.data;
+    });
   }
 
   async deleteSection(sectionGid: string): Promise<object> {
-    const response = await this.sections.deleteSection(sectionGid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.sections.deleteSection(sectionGid);
+      return response.data;
+    });
   }
 
   async moveSection(projectGid: string, data: any): Promise<object> {
-    const response = await this.sections.insertSectionForProject(projectGid, {
-      body: { data },
+    return this.limited(async () => {
+      const response = await this.sections.insertSectionForProject(projectGid, {
+        body: { data },
+      });
+      return response.data;
     });
-    return response.data;
   }
 
   async addTaskToSection(sectionGid: string, data: any): Promise<object> {
-    const response = await this.sections.addTaskForSection(sectionGid, {
-      body: { data },
+    return this.limited(async () => {
+      const response = await this.sections.addTaskForSection(sectionGid, {
+        body: { data },
+      });
+      return response.data;
     });
-    return response.data;
   }
 
   async createProject(
@@ -412,8 +611,10 @@ export class AsanaClientWrapper {
   ): Promise<Asana.ProjectBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.projects.createProject(body, options);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projects.createProject(body, options);
+      return response.data;
+    });
   }
 
   async createTaskStory(
@@ -434,12 +635,14 @@ export class AsanaClientWrapper {
     }
 
     const body = { data };
-    const response = await this.stories.createStoryForTask(
-      body,
-      taskId,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.stories.createStoryForTask(
+        body,
+        taskId,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async addTaskDependencies(
@@ -451,8 +654,10 @@ export class AsanaClientWrapper {
         dependencies: dependencies,
       },
     };
-    const response = await this.tasks.addDependenciesForTask(body, taskId);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.addDependenciesForTask(body, taskId);
+      return response.data;
+    });
   }
 
   async addTaskDependents(
@@ -464,8 +669,10 @@ export class AsanaClientWrapper {
         dependents: dependents,
       },
     };
-    const response = await this.tasks.addDependentsForTask(body, taskId);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.addDependentsForTask(body, taskId);
+      return response.data;
+    });
   }
 
   async createSubtask(
@@ -478,12 +685,14 @@ export class AsanaClientWrapper {
         ...data,
       },
     };
-    const response = await this.tasks.createSubtaskForTask(
-      taskData,
-      parentTaskId,
-      opts,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.createSubtaskForTask(
+        taskData,
+        parentTaskId,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async setParentForTask(
@@ -491,30 +700,40 @@ export class AsanaClientWrapper {
     taskId: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.TaskBase> {
-    const response = await this.tasks.setParentForTask({ data }, taskId, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.setParentForTask(
+        { data },
+        taskId,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async getProjectStatus(
     statusId: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.ProjectStatusBase> {
-    const response = await this.projectStatuses.getProjectStatus(
-      statusId,
-      opts,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projectStatuses.getProjectStatus(
+        statusId,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async getProjectStatusesForProject(
     projectId: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.ProjectStatusBase>> {
-    const response = await this.projectStatuses.getProjectStatusesForProject(
-      projectId,
-      opts,
-    );
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.projectStatuses.getProjectStatusesForProject(
+        projectId,
+        opts,
+      );
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async createProjectStatus(
@@ -522,16 +741,20 @@ export class AsanaClientWrapper {
     data: any,
   ): Promise<Asana.ProjectStatusBase> {
     const body = { data };
-    const response = await this.projectStatuses.createProjectStatusForProject(
-      body,
-      projectId,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projectStatuses.createProjectStatusForProject(
+        body,
+        projectId,
+      );
+      return response.data;
+    });
   }
 
   async deleteProjectStatus(statusId: string): Promise<object> {
-    const response = await this.projectStatuses.deleteProjectStatus(statusId);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projectStatuses.deleteProjectStatus(statusId);
+      return response.data;
+    });
   }
 
   async getMultipleTasksByGid(
@@ -542,44 +765,52 @@ export class AsanaClientWrapper {
       throw new Error("Maximum of 25 task IDs allowed");
     }
 
-    // Use Promise.all to fetch tasks in parallel
-    const tasks = await Promise.all(
-      taskIds.map((taskId) => this.getTask(taskId, opts)),
+    // Each getTask is already rate-limited, so this must NOT take a slot of its
+    // own. Fan-out is additionally bounded here so a 25-id batch cannot flood
+    // the limiter's wait queue ahead of other callers.
+    return mapWithConcurrency(taskIds, maxConcurrency, (taskId) =>
+      this.getTask(taskId, opts),
     );
-
-    return tasks;
   }
 
   async getTasksForTag(
     tag_gid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TaskBase>> {
-    const response = await this.tasks.getTasksForTag(tag_gid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.tasks.getTasksForTag(tag_gid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async getTagsForWorkspace(
     workspace_gid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TagBase>> {
-    const response = await this.tags.getTagsForWorkspace(workspace_gid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.tags.getTagsForWorkspace(workspace_gid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async getTag(
     tag_gid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.TagBase> {
-    const response = await this.tags.getTag(tag_gid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tags.getTag(tag_gid, opts);
+      return response.data;
+    });
   }
 
   async getTagsForTask(
     task_gid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TagBase>> {
-    const response = await this.tags.getTagsForTask(task_gid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.tags.getTagsForTask(task_gid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async updateTag(
@@ -588,13 +819,17 @@ export class AsanaClientWrapper {
     opts: WrapperOpts = {},
   ): Promise<Asana.TagBase> {
     const body = { data };
-    const response = await this.tags.updateTag(body, tag_gid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tags.updateTag(body, tag_gid, opts);
+      return response.data;
+    });
   }
 
   async deleteTag(tag_gid: string): Promise<object> {
-    const response = await this.tags.deleteTag(tag_gid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tags.deleteTag(tag_gid);
+      return response.data;
+    });
   }
 
   async createTagForWorkspace(
@@ -603,12 +838,14 @@ export class AsanaClientWrapper {
     opts: WrapperOpts = {},
   ): Promise<Asana.TagBase> {
     const body = { data };
-    const response = await this.tags.createTagForWorkspace(
-      body,
-      workspace_gid,
-      opts,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tags.createTagForWorkspace(
+        body,
+        workspace_gid,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async addTagToTask(task_gid: string, tag_gid: string): Promise<object> {
@@ -617,8 +854,10 @@ export class AsanaClientWrapper {
         tag: tag_gid,
       },
     };
-    const response = await this.tasks.addTagForTask(body, task_gid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.addTagForTask(body, task_gid);
+      return response.data;
+    });
   }
 
   async removeTagFromTask(task_gid: string, tag_gid: string): Promise<object> {
@@ -627,8 +866,10 @@ export class AsanaClientWrapper {
         tag: tag_gid,
       },
     };
-    const response = await this.tasks.removeTagForTask(body, task_gid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.removeTagForTask(body, task_gid);
+      return response.data;
+    });
   }
 
   async addProjectToTask(
@@ -653,8 +894,10 @@ export class AsanaClientWrapper {
       body.data.insert_before = data.insert_before;
     }
 
-    const response = await this.tasks.addProjectForTask(body, taskId);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.addProjectForTask(body, taskId);
+      return response.data;
+    });
   }
 
   async removeProjectFromTask(
@@ -666,37 +909,47 @@ export class AsanaClientWrapper {
         project: projectId,
       },
     };
-    const response = await this.tasks.removeProjectForTask(body, taskId);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.removeProjectForTask(body, taskId);
+      return response.data;
+    });
   }
 
   async deleteTask(taskId: string): Promise<object> {
-    const response = await this.tasks.deleteTask(taskId);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.tasks.deleteTask(taskId);
+      return response.data;
+    });
   }
 
   async getSubtasksForTask(
     taskGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TaskBase>> {
-    const response = await this.tasks.getSubtasksForTask(taskGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.tasks.getSubtasksForTask(taskGid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async getTasksForProject(
     projectGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TaskBase>> {
-    const response = await this.tasks.getTasksForProject(projectGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.tasks.getTasksForProject(projectGid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async getTasksForSection(
     sectionGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TaskBase>> {
-    const response = await this.tasks.getTasksForSection(sectionGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.tasks.getTasksForSection(sectionGid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async updateProject(
@@ -706,33 +959,41 @@ export class AsanaClientWrapper {
   ): Promise<Asana.ProjectBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.projects.updateProject(
-      body,
-      projectGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projects.updateProject(
+        body,
+        projectGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async deleteProject(projectGid: string): Promise<object> {
-    const response = await this.projects.deleteProject(projectGid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.projects.deleteProject(projectGid);
+      return response.data;
+    });
   }
 
   async getPortfolio(
     portfolioGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.PortfolioBase> {
-    const response = await this.portfolios.getPortfolio(portfolioGid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.portfolios.getPortfolio(portfolioGid, opts);
+      return response.data;
+    });
   }
 
   async getPortfolios(
     workspaceGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.PortfolioBase>> {
-    const response = await this.portfolios.getPortfolios(workspaceGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.portfolios.getPortfolios(workspaceGid, opts);
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async createPortfolio(
@@ -741,8 +1002,10 @@ export class AsanaClientWrapper {
   ): Promise<Asana.PortfolioBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.portfolios.createPortfolio(body, options);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.portfolios.createPortfolio(body, options);
+      return response.data;
+    });
   }
 
   async updatePortfolio(
@@ -752,72 +1015,88 @@ export class AsanaClientWrapper {
   ): Promise<Asana.PortfolioBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.portfolios.updatePortfolio(
-      body,
-      portfolioGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.portfolios.updatePortfolio(
+        body,
+        portfolioGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async deletePortfolio(portfolioGid: string): Promise<object> {
-    const response = await this.portfolios.deletePortfolio(portfolioGid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.portfolios.deletePortfolio(portfolioGid);
+      return response.data;
+    });
   }
 
   async getPortfolioItems(
     portfolioGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.ProjectBase>> {
-    const response = await this.portfolios.getItemsForPortfolio(
-      portfolioGid,
-      opts,
-    );
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.portfolios.getItemsForPortfolio(
+        portfolioGid,
+        opts,
+      );
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async addPortfolioItem(portfolioGid: string, data: any): Promise<object> {
     const body = { data };
-    const response = await this.portfolios.addItemForPortfolio(
-      body,
-      portfolioGid,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.portfolios.addItemForPortfolio(
+        body,
+        portfolioGid,
+      );
+      return response.data;
+    });
   }
 
   async removePortfolioItem(portfolioGid: string, data: any): Promise<object> {
     const body = { data };
-    const response = await this.portfolios.removeItemForPortfolio(
-      body,
-      portfolioGid,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.portfolios.removeItemForPortfolio(
+        body,
+        portfolioGid,
+      );
+      return response.data;
+    });
   }
 
   async getGoal(
     goalGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.GoalBase> {
-    const response = await this.goals.getGoal(goalGid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.goals.getGoal(goalGid, opts);
+      return response.data;
+    });
   }
 
   async getGoals(
     workspaceGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.GoalBase>> {
-    const response = await this.goals.getGoals({
-      workspace: workspaceGid,
-      ...opts,
+    return this.limited(async () => {
+      const response = await this.goals.getGoals({
+        workspace: workspaceGid,
+        ...opts,
+      });
+      return { data: response.data, next_page: response.next_page ?? null };
     });
-    return { data: response.data, next_page: response.next_page ?? null };
   }
 
   async createGoal(data: any, opts: WrapperOpts = {}): Promise<Asana.GoalBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.goals.createGoal(body, options);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.goals.createGoal(body, options);
+      return response.data;
+    });
   }
 
   async updateGoal(
@@ -827,41 +1106,57 @@ export class AsanaClientWrapper {
   ): Promise<Asana.GoalBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.goals.updateGoal(body, goalGid, options);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.goals.updateGoal(body, goalGid, options);
+      return response.data;
+    });
   }
 
   async deleteGoal(goalGid: string): Promise<object> {
-    const response = await this.goals.deleteGoal(goalGid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.goals.deleteGoal(goalGid);
+      return response.data;
+    });
   }
 
   async getTimePeriods(
     workspaceGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TimePeriodBase>> {
-    const response = await this.timePeriods.getTimePeriods(workspaceGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.timePeriods.getTimePeriods(
+        workspaceGid,
+        opts,
+      );
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async getTimePeriod(
     timePeriodGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.TimePeriodBase> {
-    const response = await this.timePeriods.getTimePeriod(timePeriodGid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.timePeriods.getTimePeriod(
+        timePeriodGid,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async getTimeTrackingEntriesForTask(
     taskGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TimeTrackingEntryBase>> {
-    const response =
-      await this.timeTrackingEntries.getTimeTrackingEntriesForTask(
-        taskGid,
-        opts,
-      );
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response =
+        await this.timeTrackingEntries.getTimeTrackingEntriesForTask(
+          taskGid,
+          opts,
+        );
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async createTimeTrackingEntry(
@@ -871,23 +1166,27 @@ export class AsanaClientWrapper {
   ): Promise<Asana.TimeTrackingEntryBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.timeTrackingEntries.createTimeTrackingEntry(
-      body,
-      taskGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.timeTrackingEntries.createTimeTrackingEntry(
+        body,
+        taskGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async getTimeTrackingEntry(
     timeTrackingEntryGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.TimeTrackingEntryBase> {
-    const response = await this.timeTrackingEntries.getTimeTrackingEntry(
-      timeTrackingEntryGid,
-      opts,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.timeTrackingEntries.getTimeTrackingEntry(
+        timeTrackingEntryGid,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async updateTimeTrackingEntry(
@@ -897,76 +1196,119 @@ export class AsanaClientWrapper {
   ): Promise<Asana.TimeTrackingEntryBase> {
     const options = opts.opt_fields ? opts : {};
     const body = { data };
-    const response = await this.timeTrackingEntries.updateTimeTrackingEntry(
-      body,
-      timeTrackingEntryGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.timeTrackingEntries.updateTimeTrackingEntry(
+        body,
+        timeTrackingEntryGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async deleteTimeTrackingEntry(timeTrackingEntryGid: string): Promise<object> {
-    const response =
-      await this.timeTrackingEntries.deleteTimeTrackingEntry(
-        timeTrackingEntryGid,
-      );
-    return response.data;
+    return this.limited(async () => {
+      const response =
+        await this.timeTrackingEntries.deleteTimeTrackingEntry(
+          timeTrackingEntryGid,
+        );
+      return response.data;
+    });
   }
 
   async getUser(
     userGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.UserBase> {
-    const response = await this.users.getUser(userGid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.users.getUser(userGid, opts);
+      return response.data;
+    });
   }
 
   async getUsersForWorkspace(
     workspaceGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.UserBase>> {
-    const response = await this.users.getUsersForWorkspace(workspaceGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.cached(
+      cacheKey("getUsersForWorkspace", [workspaceGid, opts]),
+      TTL.REFERENCE,
+      () =>
+        this.limited(async () => {
+          const response = await this.users.getUsersForWorkspace(
+            workspaceGid,
+            opts,
+          );
+          return {
+            data: response.data,
+            next_page: response.next_page ?? null,
+          };
+        }),
+    );
   }
 
   async getTeam(
     teamGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.TeamBase> {
-    const response = await this.teams.getTeam(teamGid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.teams.getTeam(teamGid, opts);
+      return response.data;
+    });
   }
 
   async getTeamsForWorkspace(
     workspaceGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.TeamBase>> {
-    const response = await this.teams.getTeamsForWorkspace(workspaceGid, opts);
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.cached(
+      cacheKey("getTeamsForWorkspace", [workspaceGid, opts]),
+      TTL.REFERENCE,
+      () =>
+        this.limited(async () => {
+          const response = await this.teams.getTeamsForWorkspace(
+            workspaceGid,
+            opts,
+          );
+          return {
+            data: response.data,
+            next_page: response.next_page ?? null,
+          };
+        }),
+    );
   }
 
   async getAttachmentsForObject(
     parentGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.AttachmentBase>> {
-    const response = await this.attachments.getAttachmentsForObject(
-      parentGid,
-      opts,
-    );
-    return { data: response.data, next_page: response.next_page ?? null };
+    return this.limited(async () => {
+      const response = await this.attachments.getAttachmentsForObject(
+        parentGid,
+        opts,
+      );
+      return { data: response.data, next_page: response.next_page ?? null };
+    });
   }
 
   async getAttachment(
     attachmentGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.AttachmentBase> {
-    const response = await this.attachments.getAttachment(attachmentGid, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.attachments.getAttachment(
+        attachmentGid,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async deleteAttachment(attachmentGid: string): Promise<object> {
-    const response = await this.attachments.deleteAttachment(attachmentGid);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.attachments.deleteAttachment(attachmentGid);
+      return response.data;
+    });
   }
 
   async createAttachmentForObject(
@@ -974,34 +1316,48 @@ export class AsanaClientWrapper {
     data: { resource_subtype: string; url?: string; name?: string },
     opts: WrapperOpts = {},
   ): Promise<Asana.AttachmentBase> {
-    const response = await this.attachments.createAttachmentForObject({
-      parent: parentGid,
-      ...data,
-      ...opts,
+    return this.limited(async () => {
+      const response = await this.attachments.createAttachmentForObject({
+        parent: parentGid,
+        ...data,
+        ...opts,
+      });
+      return response.data;
     });
-    return response.data;
   }
 
   async getCustomFieldsForWorkspace(
     workspaceGid: string,
     opts: WrapperOpts = {},
   ): Promise<Paginated<Asana.CustomFieldBase>> {
-    const response = await this.customFields.getCustomFieldsForWorkspace(
-      workspaceGid,
-      opts,
+    return this.cached(
+      cacheKey("getCustomFieldsForWorkspace", [workspaceGid, opts]),
+      TTL.REFERENCE,
+      () =>
+        this.limited(async () => {
+          const response = await this.customFields.getCustomFieldsForWorkspace(
+            workspaceGid,
+            opts,
+          );
+          return {
+            data: response.data,
+            next_page: response.next_page ?? null,
+          };
+        }),
     );
-    return { data: response.data, next_page: response.next_page ?? null };
   }
 
   async getCustomField(
     customFieldGid: string,
     opts: WrapperOpts = {},
   ): Promise<Asana.CustomFieldBase> {
-    const response = await this.customFields.getCustomField(
-      customFieldGid,
-      opts,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.customFields.getCustomField(
+        customFieldGid,
+        opts,
+      );
+      return response.data;
+    });
   }
 
   async createCustomField(
@@ -1009,8 +1365,10 @@ export class AsanaClientWrapper {
     opts: WrapperOpts = {},
   ): Promise<Asana.CustomFieldBase> {
     const body = { data };
-    const response = await this.customFields.createCustomField(body, opts);
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.customFields.createCustomField(body, opts);
+      return response.data;
+    });
   }
 
   async updateCustomField(
@@ -1022,16 +1380,21 @@ export class AsanaClientWrapper {
       body: { data },
     };
     if (opts.opt_fields) options.opt_fields = opts.opt_fields;
-    const response = await this.customFields.updateCustomField(
-      customFieldGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.customFields.updateCustomField(
+        customFieldGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async deleteCustomField(customFieldGid: string): Promise<object> {
-    const response = await this.customFields.deleteCustomField(customFieldGid);
-    return response.data;
+    return this.limited(async () => {
+      const response =
+        await this.customFields.deleteCustomField(customFieldGid);
+      return response.data;
+    });
   }
 
   async createEnumOption(
@@ -1043,11 +1406,13 @@ export class AsanaClientWrapper {
       body: { data },
     };
     if (opts.opt_fields) options.opt_fields = opts.opt_fields;
-    const response = await this.customFields.createEnumOptionForCustomField(
-      customFieldGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.customFields.createEnumOptionForCustomField(
+        customFieldGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async updateEnumOption(
@@ -1059,11 +1424,13 @@ export class AsanaClientWrapper {
       body: { data },
     };
     if (opts.opt_fields) options.opt_fields = opts.opt_fields;
-    const response = await this.customFields.updateEnumOption(
-      enumOptionGid,
-      options,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.customFields.updateEnumOption(
+        enumOptionGid,
+        options,
+      );
+      return response.data;
+    });
   }
 
   async typeaheadForWorkspace(
@@ -1071,11 +1438,13 @@ export class AsanaClientWrapper {
     resourceType: string,
     opts: { query?: string; count?: number; opt_fields?: string } = {},
   ): Promise<Asana.AsanaNamedResource[]> {
-    const response = await this.typeahead.typeaheadForWorkspace(
-      workspace,
-      resourceType,
-      opts,
-    );
-    return response.data;
+    return this.limited(async () => {
+      const response = await this.typeahead.typeaheadForWorkspace(
+        workspace,
+        resourceType,
+        opts,
+      );
+      return response.data;
+    });
   }
 }

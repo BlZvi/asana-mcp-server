@@ -16,10 +16,20 @@ async function main() {
   }
 
   console.error("Starting Asana MCP Server...");
-  const server = new McpServer({
-    name: "Asana MCP Server",
-    version: VERSION,
-  });
+  const server = new McpServer(
+    {
+      name: "Asana MCP Server",
+      version: VERSION,
+    },
+    {
+      // `completions` must be advertised or clients will never request the
+      // autocomplete suggestions wired up in prompt-handler.ts.
+      capabilities: {
+        completions: {},
+        logging: {},
+      },
+    },
+  );
 
   const client = new AsanaClientWrapper(asanaToken);
 

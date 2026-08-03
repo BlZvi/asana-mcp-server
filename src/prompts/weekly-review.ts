@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import { resolveWorkspace } from "../config.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const weeklyReviewPrompt: PromptEntry = {
   name: "weekly-review",
@@ -18,7 +19,7 @@ export const weeklyReviewPrompt: PromptEntry = {
   },
   handler: async (client: AsanaClientWrapper, args) => {
     const workspaceGid = resolveWorkspace(args?.workspace_gid);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
@@ -49,8 +50,10 @@ export const weeklyReviewPrompt: PromptEntry = {
       projects?: { name?: string }[];
     }) => {
       const project =
-        t.projects?.map((p) => p.name ?? "").filter(Boolean).join(", ") ||
-        "No project";
+        t.projects
+          ?.map((p) => p.name ?? "")
+          .filter(Boolean)
+          .join(", ") || "No project";
       return `  - ${t.name} [${project}]`;
     };
 
@@ -69,17 +72,21 @@ export const weeklyReviewPrompt: PromptEntry = {
     const byProject = new Map<string, string[]>();
     for (const t of completed) {
       const project =
-        t.projects?.map((p: { name?: string }) => p.name ?? "").filter(Boolean).join(", ") ||
-        "No project";
-      if (!byProject.has(project)) byProject.set(project, []);
-      byProject.get(project)!.push(t.name);
+        t.projects
+          ?.map((p: { name?: string }) => p.name ?? "")
+          .filter(Boolean)
+          .join(", ") || "No project";
+      const names = byProject.get(project) ?? [];
+      names.push(t.name);
+      byProject.set(project, names);
     }
 
     const completedSection =
       completed.length > 0
         ? [...byProject.entries()]
-            .map(([proj, names]) =>
-              `  **${proj}**\n${names.map((n) => `    - ${n}`).join("\n")}`,
+            .map(
+              ([proj, names]) =>
+                `  **${proj}**\n${names.map((n) => `    - ${n}`).join("\n")}`,
             )
             .join("\n\n")
         : "  Nothing completed this week";

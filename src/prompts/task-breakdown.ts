@@ -8,9 +8,7 @@ export const taskBreakdownPrompt: PromptEntry = {
     "Break a complex Asana task into well-scoped subtasks. Pre-fetches the task and existing subtasks, then guides creation of a complete subtask checklist.",
   readOnly: false,
   argsSchema: {
-    task_id: z
-      .string()
-      .describe("The GID or URL of the task to break down"),
+    task_id: z.string().describe("The GID or URL of the task to break down"),
   },
   handler: async (client: AsanaClientWrapper, args) => {
     const taskId = args?.task_id;
@@ -18,7 +16,7 @@ export const taskBreakdownPrompt: PromptEntry = {
 
     // Extract GID if URL provided
     const gid = taskId.includes("/")
-      ? taskId.split("/").filter(Boolean).pop() ?? taskId
+      ? (taskId.split("/").filter(Boolean).pop() ?? taskId)
       : taskId;
 
     const [task, { data: existingSubtasks }] = await Promise.all([
@@ -35,7 +33,11 @@ export const taskBreakdownPrompt: PromptEntry = {
       existingSubtasks.length > 0
         ? existingSubtasks
             .map(
-              (s: { name: string; completed?: boolean; assignee?: { name?: string } | null }) =>
+              (s: {
+                name: string;
+                completed?: boolean;
+                assignee?: { name?: string } | null;
+              }) =>
                 `  - [${s.completed ? "x" : " "}] ${s.name}${s.assignee?.name ? ` (${s.assignee.name})` : ""}`,
             )
             .join("\n")

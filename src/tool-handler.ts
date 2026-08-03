@@ -1,9 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AsanaClientWrapper } from "./asana-client-wrapper.js";
-import { isReadOnlyMode } from "./config.js";
+import { isDryRunMode, isReadOnlyMode } from "./config.js";
+import { activityTools } from "./tools/activity-tools.js";
 import { attachmentTools } from "./tools/attachment-tools.js";
+import { codeTools } from "./tools/code-tools.js";
 import { customFieldTools } from "./tools/custom-field-tools.js";
+import { estimationTools } from "./tools/estimation-tools.js";
 import { goalTools } from "./tools/goal-tools.js";
+import { historyTools } from "./tools/history-tools.js";
 import { portfolioTools } from "./tools/portfolio-tools.js";
 import { projectStatusTools } from "./tools/project-status-tools.js";
 import { projectTools } from "./tools/project-tools.js";
@@ -36,7 +40,38 @@ const allToolEntries: ToolEntry[] = [
   ...timeTools,
   ...attachmentTools,
   ...customFieldTools,
+  // Analytics and cross-system tools
+  ...historyTools,
+  ...activityTools,
+  ...estimationTools,
+  ...codeTools,
 ];
+
+/** `asana_get_task_history` -> "Get Task History". */
+function defaultTitle(name: string): string {
+  return name
+    .replace(/^asana_/, "")
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/**
+ * Tools whose effects cannot be undone.
+ *
+ * Marked separately from "not read-only" so clients can require confirmation
+ * for genuine data loss without nagging on every ordinary update.
+ */
+function isDestructive(entry: ToolEntry): boolean {
+  if (entry.destructive !== undefined) return entry.destructive;
+  return /^asana_(delete|remove)_/.test(entry.name);
+}
+
+function isIdempotent(entry: ToolEntry): boolean {
+  if (entry.idempotent !== undefined) return entry.idempotent;
+  if (entry.readOnly) return true;
+  return /^asana_(update|set|add|remove|delete)_/.test(entry.name);
+}
 
 export function registerTools(
   server: McpServer,
@@ -44,23 +79,53 @@ export function registerTools(
 ): void {
   for (const entry of allToolEntries) {
     if (isReadOnlyMode && !entry.readOnly) continue;
-    server.tool(
+
+    server.registerTool(
       entry.name,
-      entry.description,
-      entry.inputSchema,
-      async (args) => {
+      {
+        title: entry.title ?? defaultTitle(entry.name),
+        description: entry.description,
+        inputSchema: entry.inputSchema,
+        annotations: {
+          readOnlyHint: entry.readOnly,
+          destructiveHint: isDestructive(entry),
+          idempotentHint: isIdempotent(entry),
+          openWorldHint: true,
+        },
+      },
+      async (args: any) => {
         console.error("Received CallToolRequest:", entry.name);
+
+        // Dry run keeps write tools visible (so the model can plan a full
+        // sequence) while guaranteeing nothing reaches Asana.
+        if (isDryRunMode && !entry.readOnly) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  dry_run: true,
+                  would_call: entry.name,
+                  with_arguments: args,
+                  message: `DRY RUN — no change was made in Asana. \`${entry.name}\` would have been called with the arguments above. Unset ASANA_DRY_RUN to execute for real.`,
+                }),
+              },
+            ],
+          };
+        }
+
         try {
           return await entry.handler(client, args);
         } catch (error) {
           console.error("Error executing tool:", error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           return {
+            isError: true,
             content: [
               {
-                type: "text",
-                text: JSON.stringify({
-                  error: error instanceof Error ? error.message : String(error),
-                }),
+                type: "text" as const,
+                text: JSON.stringify({ error: message, tool: entry.name }),
               },
             ],
           };

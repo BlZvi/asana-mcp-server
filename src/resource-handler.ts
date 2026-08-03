@@ -275,7 +275,9 @@ export async function registerResources(
 ): Promise<void> {
   // Register each workspace as a static resource (fetched once at startup)
   try {
-    const { data: workspaces } = await client.listWorkspaces({ opt_fields: "name,gid" });
+    const { data: workspaces } = await client.listWorkspaces({
+      opt_fields: "name,gid",
+    });
     for (const ws of workspaces) {
       const uri = `asana://workspace/${ws.gid}`;
       server.registerResource(

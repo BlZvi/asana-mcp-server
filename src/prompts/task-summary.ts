@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const taskSummaryPrompt: PromptEntry = {
   name: "task-summary",
@@ -29,7 +30,7 @@ export const taskSummaryPrompt: PromptEntry = {
     const statusLine = task.completed ? "Completed" : "In Progress";
     const assigneeLine = task.assignee?.name ?? "Unassigned";
     const dueLine = task.due_on
-      ? `${task.due_on}${!task.completed && task.due_on < new Date().toISOString().slice(0, 10) ? " (OVERDUE)" : ""}`
+      ? `${task.due_on}${!task.completed && task.due_on < todayISO() ? " (OVERDUE)" : ""}`
       : "No due date";
     const projectsLine =
       task.projects?.map((p) => p.name ?? "").join(", ") || "None";

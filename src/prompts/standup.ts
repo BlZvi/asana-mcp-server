@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AsanaClientWrapper } from "../asana-client-wrapper.js";
 import { resolveWorkspace } from "../config.js";
 import type { PromptEntry } from "./types.js";
+import { todayISO } from "./types.js";
 
 export const standupPrompt: PromptEntry = {
   name: "standup",
@@ -28,7 +29,7 @@ export const standupPrompt: PromptEntry = {
     const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
       .toISOString()
       .slice(0, 10);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
 
     const [{ data: completed }, { data: inProgress }] = await Promise.all([
       client.searchTasks(workspaceGid, {
@@ -52,8 +53,10 @@ export const standupPrompt: PromptEntry = {
       projects?: { name?: string }[];
     }) => {
       const project =
-        t.projects?.map((p) => p.name ?? "").filter(Boolean).join(", ") ||
-        "No project";
+        t.projects
+          ?.map((p) => p.name ?? "")
+          .filter(Boolean)
+          .join(", ") || "No project";
       return `  - ${t.name} [${project}]`;
     };
 
@@ -70,20 +73,28 @@ export const standupPrompt: PromptEntry = {
       inProgress.length > 0
         ? inProgress
             .slice(0, 25)
-            .map((t: { name: string; due_on?: string; projects?: { name?: string }[] }) => {
-              const project =
-                t.projects?.map((p: { name?: string }) => p.name ?? "").filter(Boolean).join(", ") ||
-                "No project";
-              const dueTag =
-                t.due_on === today
-                  ? " · due today"
-                  : t.due_on && t.due_on < today
-                    ? ` · overdue (${t.due_on})`
-                    : t.due_on
-                      ? ` · due ${t.due_on}`
-                      : "";
-              return `  - ${t.name} [${project}]${dueTag}`;
-            })
+            .map(
+              (t: {
+                name: string;
+                due_on?: string;
+                projects?: { name?: string }[];
+              }) => {
+                const project =
+                  t.projects
+                    ?.map((p: { name?: string }) => p.name ?? "")
+                    .filter(Boolean)
+                    .join(", ") || "No project";
+                const dueTag =
+                  t.due_on === today
+                    ? " · due today"
+                    : t.due_on && t.due_on < today
+                      ? ` · overdue (${t.due_on})`
+                      : t.due_on
+                        ? ` · due ${t.due_on}`
+                        : "";
+                return `  - ${t.name} [${project}]${dueTag}`;
+              },
+            )
             .join("\n") +
           (inProgress.length > 25
             ? `\n  ... and ${inProgress.length - 25} more`

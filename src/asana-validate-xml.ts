@@ -120,6 +120,61 @@ const asanaRichTextRules = {
   disallowedDirectTextChildren: new Set(["ul", "ol", "table", "tr"]),
 };
 
+// Common HTML named entities Asana rich text may contain. The XML parser only
+// knows the 5 predefined XML entities, so map the rest to numeric form (which
+// the XML parser accepts) before parsing. The XML-safe five are left untouched.
+const htmlEntityToNumeric: Record<string, string> = {
+  nbsp: "&#160;",
+  mdash: "&#8212;",
+  ndash: "&#8211;",
+  hellip: "&#8230;",
+  copy: "&#169;",
+  reg: "&#174;",
+  trade: "&#8482;",
+  deg: "&#176;",
+  euro: "&#8364;",
+  pound: "&#163;",
+  cent: "&#162;",
+  bull: "&#8226;",
+  ldquo: "&#8220;",
+  rdquo: "&#8221;",
+  lsquo: "&#8216;",
+  rsquo: "&#8217;",
+};
+
+// Matches an ampersand-introduced token: &name; &#123; &#xAB; or a bare & with
+// no following ';' (malformed). Used both to rewrite known named entities and
+// to detect an unescaped/unknown '&', which xmldom silently swallows.
+const ampToken = /&(?:#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]*)?;?/g;
+const xmlPredefined = new Set(["amp", "lt", "gt", "quot", "apos"]);
+
+/**
+ * Rewrites known HTML named entities to numeric form and returns an error if a
+ * bare/unknown '&' is found (xmldom would silently escape it to '&amp;',
+ * masking malformed input). Returns { xml, error }.
+ */
+function normalizeEntities(xml: string): { xml: string; error?: string } {
+  let error: string | undefined;
+  const out = xml.replace(ampToken, (match) => {
+    // Numeric entity, always valid.
+    if (/^&#(x[0-9a-fA-F]+|[0-9]+);$/.test(match)) return match;
+    const named = /^&([a-zA-Z][a-zA-Z0-9]*);$/.exec(match);
+    if (named) {
+      const name = named[1];
+      if (xmlPredefined.has(name)) return match;
+      if (htmlEntityToNumeric[name]) return htmlEntityToNumeric[name];
+      if (!error)
+        error = `Unknown or unsupported HTML entity '${match}'. Use a numeric entity (e.g. &#160;) or one of the supported named entities.`;
+      return match;
+    }
+    // Bare '&' or '&...' without a terminating ';' — invalid, must be escaped.
+    if (!error)
+      error = `Unescaped '&' found. Use '&amp;' for a literal ampersand.`;
+    return match;
+  });
+  return { xml: out, error };
+}
+
 // Helper function to check if a node is a non-empty text node
 function isNonEmptyTextNode(node: Node): boolean {
   // Node.TEXT_NODE === 3
@@ -149,13 +204,27 @@ export function validateAsanaXml(xmlString: string): string[] {
     ];
   }
 
-  // --- 2. Parsing ---
+  // --- 2. Entity normalization ---
+  // xmldom rejects HTML named entities and silently escapes bare '&', so
+  // normalize/validate entities before handing the string to the XML parser.
+  const { xml: normalizedXml, error: entityError } =
+    normalizeEntities(xmlString);
+  if (entityError) {
+    return [entityError];
+  }
+
+  // --- 3. Parsing ---
+  // Capture warnings too: xmldom reports unclosed/mismatched tags as warnings
+  // (not errors) while silently auto-recovering, so ignoring them would let
+  // malformed markup through.
   const parseErrors: string[] = [];
   let doc: Document;
   try {
     const parser = new DOMParser({
       errorHandler: {
-        warning: () => {},
+        warning: (msg: string) => {
+          parseErrors.push(msg);
+        },
         error: (msg: string) => {
           parseErrors.push(msg);
         },
@@ -164,7 +233,7 @@ export function validateAsanaXml(xmlString: string): string[] {
         },
       },
     });
-    doc = parser.parseFromString(xmlString, "text/xml");
+    doc = parser.parseFromString(normalizedXml, "text/xml");
   } catch (e: any) {
     // Catch errors during initial parsing (e.g., invalid chars)
     return [`Failed to parse XML: ${e.message}`];
