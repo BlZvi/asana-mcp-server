@@ -1,4 +1,9 @@
-import { DOMParser } from "@xmldom/xmldom";
+import {
+  DOMParser,
+  type Document,
+  type Element,
+  type Node,
+} from "@xmldom/xmldom";
 
 /**
  * Defines the validation rules based on the provided Asana rich text example.
@@ -221,16 +226,9 @@ export function validateAsanaXml(xmlString: string): string[] {
   let doc: Document;
   try {
     const parser = new DOMParser({
-      errorHandler: {
-        warning: (msg: string) => {
-          parseErrors.push(msg);
-        },
-        error: (msg: string) => {
-          parseErrors.push(msg);
-        },
-        fatalError: (msg: string) => {
-          parseErrors.push(msg);
-        },
+      // xmldom 0.9: single onError callback receives warning/error/fatalError.
+      onError: (_level, msg) => {
+        parseErrors.push(msg);
       },
     });
     doc = parser.parseFromString(normalizedXml, "text/xml");
