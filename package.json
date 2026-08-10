@@ -59,11 +59,11 @@
   "author": "Zvi Blitsman",
   "license": "MIT",
   "devDependencies": {
-    "@biomejs/biome": "2.5.6",
-    "@modelcontextprotocol/inspector": "^2.0.0",
-    "@types/node": "^26.1.2",
+    "@biomejs/biome": "2.5.7",
+    "@modelcontextprotocol/inspector": "^2.1.0",
+    "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.10",
-    "tsx": "^4.23.1",
+    "tsx": "^4.23.11",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
